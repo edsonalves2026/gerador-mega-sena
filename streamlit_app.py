@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from itertools import combinations
-import random
 import io
 import os
 
@@ -14,6 +13,36 @@ st.set_page_config(
     page_icon="🎲",
     layout="centered"
 )
+
+# -----------------------------------------------------------------------------
+# AUTENTICAÇÃO / TELA DE LOGIN
+# -----------------------------------------------------------------------------
+def verificar_senha():
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
+
+    if st.session_state.autenticado:
+        return True
+
+    st.title("🔒 Acesso Restrito")
+    st.subheader("Digite a senha para acessar o gerador")
+    
+    senha_digitada = st.text_input("Senha:", type="password")
+    
+    if st.button("Entrar"):
+        # Busca a senha configurada nos Secrets do Streamlit Cloud
+        senha_correta = st.secrets.get("APP_PASSWORD", "123456")
+        
+        if senha_digitada == senha_correta:
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta!")
+            
+    return False
+
+if not verificar_senha():
+    st.stop()
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES DE PROCESSAMENTO E ESTATÍSTICA
@@ -216,11 +245,10 @@ def gerar_texto_exportacao(apostas, pool, faixa_repetidas, modo_nome):
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
-# INTERFACE DO STREAMLIT
+# INTERFACE PRINCIPAL
 # -----------------------------------------------------------------------------
 st.title("🎲 Gerador Otimizado Mega-Sena")
 
-# Painel Lateral para Opções
 st.sidebar.header("⚙️ Configurações")
 modo_selecionado = st.sidebar.radio(
     "Escolha o Modo de Geração:",
@@ -240,7 +268,6 @@ if modo_selecionado == "Manual (Sua Escolha de 40 Dezenas)":
                  27, 28, 30, 31, 33, 34, 35, 37, 38, 40, 41, 42, 44, 45, 47, 49, 50, 52, 55, 58]
     )
 
-# Identificação da Planilha
 arquivo_padrao = "mega_sena.xlsx"
 fonte_excel = None
 
@@ -252,7 +279,6 @@ else:
     if uploaded_file is not None:
         fonte_excel = uploaded_file
 
-# Botão de Execução Principais
 if fonte_excel is not None:
     if st.button("Gerar Palpites"):
         if modo_selecionado.startswith("Manual") and len(dezenas_manuais_input) != 40:
@@ -275,7 +301,6 @@ if fonte_excel is not None:
                     pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
                     st.success(f"Top 5 Grupos Selecionados: {', '.join(top_5_grupos)}")
 
-                # Purificação e Filtros
                 pool_purificado = purificar_pool_multi_camada(
                     pool_bruto=pool_bruto,
                     df_historico=df_historico,
@@ -292,7 +317,6 @@ if fonte_excel is not None:
                 np.random.shuffle(apostas_filtradas)
                 apostas_finais = apostas_filtradas[:qtd_jogos].tolist()
                 
-                # Exibição
                 st.info(f"Pool Final (24 Dezenas): {sorted(pool_purificado)}")
                 st.subheader(f"Jogos Gerados ({len(apostas_finais)}):")
                 
@@ -303,7 +327,6 @@ if fonte_excel is not None:
                 
                 st.code(texto_jogos, language="text")
                 
-                # Exportação
                 conteudo_txt = gerar_texto_exportacao(apostas_finais, pool_purificado, faixa_repetidas, modo_nome)
                 st.download_button(
                     label="📥 Baixar Arquivo de Jogos (.txt)",
