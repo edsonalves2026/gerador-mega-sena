@@ -272,7 +272,7 @@ arquivo_padrao = "mega_sena.xlsx"
 fonte_excel = None
 
 if os.path.exists(arquivo_padrao):
-    st.success("Planilha local 'mega_sena.xlsx' carregada com sucesso!")
+    st.markdown("Faça o upload da planilha atualizada 'mega_sena.xlsx'!")
     fonte_excel = arquivo_padrao
 else:
     uploaded_file = st.file_uploader("Selecione a planilha Excel (.xlsx)", type=["xlsx"])
