@@ -1,17 +1,30 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 from itertools import combinations
 import random
+import io
+import os
 
-def carregar_dados_excel(caminho_planilha):
-    """Lê a planilha dinamicamente e extrai as 6 dezenas do histórico."""
-    df = pd.read_excel(caminho_planilha)
+# -----------------------------------------------------------------------------
+# CONFIGURAÇÃO DA PÁGINA
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Gerador Mega-Sena",
+    page_icon="🎲",
+    layout="centered"
+)
+
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE PROCESSAMENTO E ESTATÍSTICA
+# -----------------------------------------------------------------------------
+def carregar_dados_excel(fonte_dados):
+    df = pd.read_excel(fonte_dados)
     colunas_dezenas = ['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 'Bola6']
     df['dezenas'] = df[colunas_dezenas].values.tolist()
     return df
 
 def obter_24_grupos_fixos():
-    """Retorna a matriz fixa com os 24 grupos de 40 dezenas cadastrados."""
     return {
         "Grupo_01": [3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 16, 17, 19, 20, 24, 25, 27, 30, 32, 33, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 53, 54, 56, 57, 58, 59, 60],
         "Grupo_02": [1, 2, 4, 5, 6, 8, 10, 11, 13, 14, 17, 21, 22, 23, 24, 26, 27, 28, 29, 30, 32, 33, 35, 36, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 56, 59],
@@ -97,8 +110,6 @@ def purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_a
     restantes = dezenas_ordenadas[vagas_quentes:]
     
     atrasos_dict = calcular_atrasos_historico(df_historico, restantes)
-    
-    # ---- ROTAÇÃO INTELIGENTE DAS ATRASADAS ----
     candidatas_atrasadas = sorted(restantes, key=lambda d: atrasos_dict[d], reverse=True)
     pool_candidatas_atrasadas = candidatas_atrasadas[:vagas_atrasadas * 2]
     
@@ -115,7 +126,6 @@ def purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_a
         ).tolist())
     else:
         top_atrasadas = sorted(candidatas_atrasadas[:vagas_atrasadas])
-    # -------------------------------------------
     
     universo_final = sorted(top_quentes + top_atrasadas)
     return universo_final
@@ -164,81 +174,101 @@ def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas
     
     return mask_soma & mask_paridade & mask_moldura & mask_repetidos & mask_consecutivos & mask_quadrantes
 
-def exportar_apostas_txt(apostas, pool, faixa_repetidas, caminho_txt="jogos_gerados.txt"):
-    with open(caminho_txt, "w", encoding="utf-8") as file:
-        file.write("==================================================\n")
-        file.write("           MEGA-SENA - JOGOS GERADOS              \n")
-        file.write("==================================================\n\n")
+def gerar_texto_exportacao(apostas, pool, faixa_repetidas):
+    output = io.StringIO()
+    output.write("==================================================\n")
+    output.write("          MEGA-SENA - JOGOS GERADOS               \n")
+    output.write("==================================================\n\n")
+    output.write(f"POOL SELECIONADO COM ROTAÇÃO (24 DEZENAS):\n")
+    output.write(f"{sorted(pool)}\n\n")
+    output.write(f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n")
+    output.write("==================================================\n")
+    output.write(f"APOSTAS SIMPLES VALIDADAS ({len(apostas)} JOGOS):\n")
+    output.write("==================================================\n\n")
+    
+    for idx, aposta in enumerate(apostas, 1):
+        aposta_fmt = " - ".join(f"{num:02d}" for num in sorted(aposta))
+        output.write(f"Jogo {idx:02d}: {aposta_fmt}\n")
         
-        file.write(f"POOL SELECIONADO COM ROTAÇÃO (24 DEZENAS):\n")
-        file.write(f"{sorted(pool)}\n\n")
-        
-        file.write(f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n")
-        file.write("==================================================\n")
-        file.write(f"APOSTAS SIMPLES VALIDADAS ({len(apostas)} JOGOS):\n")
-        file.write("==================================================\n\n")
-        
-        for idx, aposta in enumerate(apostas, 1):
-            aposta_fmt = " - ".join(f"{num:02d}" for num in sorted(aposta))
-            file.write(f"Jogo {idx:02d}: {aposta_fmt}\n")
+    output.write("\n==================================================\n")
+    output.write("Filtros Aplicados: Soma (140-220), Paridade (2-4P),\n")
+    output.write("Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par)\n")
+    output.write("e Quadrantes (máx 1 zerado, máx 3 por qdt).\n")
+    output.write("==================================================\n")
+    
+    return output.getvalue()
+
+# -----------------------------------------------------------------------------
+# INTERFACE DO STREAMLIT
+# -----------------------------------------------------------------------------
+st.title("🎲 Gerador Otimizado Mega-Sena")
+
+# Identifica se a planilha já está salva no repositório ou se requer upload
+arquivo_padrao = "mega_sena.xlsx"
+fonte_excel = None
+
+if os.path.exists(arquivo_padrao):
+    st.success("Planilha local 'mega_sena.xlsx' detectada!")
+    fonte_excel = arquivo_padrao
+else:
+    uploaded_file = st.file_uploader("Selecione a planilha Excel (.xlsx)", type=["xlsx"])
+    if uploaded_file is not None:
+        fonte_excel = uploaded_file
+
+# Quantidade de Jogos
+qtd_jogos = st.number_input("Quantidade de Jogos a Gerar:", min_value=1, max_value=200, value=30, step=1)
+
+if fonte_excel is not None:
+    if st.button("Gerar Palpites"):
+        with st.spinner("Processando histórico e aplicando filtros estatísticos..."):
+            df_historico = carregar_dados_excel(fonte_excel)
+            grupos = obter_24_grupos_fixos()
+            ultimo_concurso = df_historico.iloc[-1]['dezenas']
             
-        file.write("\n==================================================\n")
-        file.write("Filtros Aplicados: Soma (140-220), Paridade (2-4P),\n")
-        file.write("Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par)\n")
-        file.write("e Quadrantes (máx 1 zerado, máx 3 por qdt).\n")
-        file.write("==================================================\n")
-
-def executar_gerador_mega_sena(caminho_planilha, limite_apostas_geradas=30, caminho_txt="jogos_gerados.txt", dezenas_manuais=None):
-    df_historico = carregar_dados_excel(caminho_planilha)
-    grupos = obter_24_grupos_fixos()
-    ultimo_concurso = df_historico.iloc[-1]['dezenas']
-    
-    if dezenas_manuais and len(dezenas_manuais) > 0:
-        print(f"-> Usando pool de dezenas fornecido manualmente ({len(dezenas_manuais)} dezenas).")
-        pool_bruto = sorted(list(set(dezenas_manuais)))
-    else:
-        print("-> Nenhuma dezena manual fornecida. Executando seleção automática via Top 5 Grupos...")
-        janela_50 = df_historico.iloc[-50:]
-        ranking_grupos = calcular_score_decaimento_vetorizado(janela_50, grupos)
-        top_5_grupos = ranking_grupos.head(5).index.tolist()
-        pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
-    
-    pool_purificado = purificar_pool_multi_camada(
-        pool_bruto=pool_bruto,
-        df_historico=df_historico,
-        total_alvo=24,
-        vagas_atrasadas=4
-    )
-    
-    faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
-    
-    todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
-    mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas)
-    apostas_filtradas = todas_combinacoes[mask_validos]
-    
-    # Embaralha os jogos válidos antes de fatiar para garantir diversidade nas execuções
-    np.random.shuffle(apostas_filtradas)
-    
-    apostas_finais = apostas_filtradas[:limite_apostas_geradas].tolist()
-    
-    exportar_apostas_txt(apostas_finais, pool_purificado, faixa_repetidas, caminho_txt)
-    
-    return apostas_finais, pool_purificado, faixa_repetidas
-
-if __name__ == "__main__":
-    CAMINHO_PLANILHA = "mega_sena.xlsx" 
-    MEU_POOL_MANUAL = []
-    
-    try:
-        # Aumentado para 30 apostas geradas (você pode alterar para 40, 50, etc.)
-        QTD_JOGOS = 30 
-        
-        jogos, pool, faixa = executar_gerador_mega_sena(
-            caminho_planilha=CAMINHO_PLANILHA, 
-            limite_apostas_geradas=QTD_JOGOS, 
-            caminho_txt="jogos_gerados.txt",
-            dezenas_manuais=MEU_POOL_MANUAL
-        )
-        print(f"Sucesso! {len(jogos)} apostas geradas e salvas em 'jogos_gerados.txt'.")
-    except FileNotFoundError:
-        print(f"Certifique-se de que o arquivo '{CAMINHO_PLANILHA}' está no mesmo diretório do script.")
+            # Ranking e purificação
+            janela_50 = df_historico.iloc[-50:]
+            ranking_grupos = calcular_score_decaimento_vetorizado(janela_50, grupos)
+            top_5_grupos = ranking_grupos.head(5).index.tolist()
+            pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
+            
+            pool_purificado = purificar_pool_multi_camada(
+                pool_bruto=pool_bruto,
+                df_historico=df_historico,
+                total_alvo=24,
+                vagas_atrasadas=4
+            )
+            
+            faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
+            
+            # Combinatória e Filtros
+            todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
+            mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas)
+            apostas_filtradas = todas_combinacoes[mask_validos]
+            
+            np.random.shuffle(apostas_filtradas)
+            apostas_finais = apostas_filtradas[:qtd_jogos].tolist()
+            
+            # Exibição na Tela
+            st.success(f"Top 5 Grupos Selecionados: {', '.join(top_5_grupos)}")
+            st.info(f"Pool de 24 Dezenas: {sorted(pool_purificado)}")
+            
+            # Formatação visual dos jogos
+            st.subheader("Jogos Gerados:")
+            texto_jogos = ""
+            for idx, aposta in enumerate(apostas_finais, 1):
+                aposta_fmt = " - ".join(f"{num:02d}" for num in sorted(aposta))
+                texto_jogos += f"Jogo {idx:02d}: {aposta_fmt}\n"
+            
+            st.code(texto_jogos, language="text")
+            
+            # Gerar TXT para Download
+            conteudo_txt = gerar_texto_exportacao(apostas_finais, pool_purificado, faixa_repetidas)
+            
+            st.download_button(
+                label="📥 Baixar Arquivo de Jogos (.txt)",
+                data=conteudo_txt,
+                file_name="jogos_mega_sena.txt",
+                mime="text/plain"
+            )
+else:
+    st.info("Aguardando carregamento da planilha para liberar a geração.")
