@@ -6,6 +6,9 @@ from itertools import combinations
 import io
 import os
 import random
+import urllib.request
+from bs4 import BeautifulSoup
+import re
 
 # Configuração da página web
 st.set_page_config(page_title="Gerador Mega-Sena", page_icon="🎲", layout="wide")
@@ -98,6 +101,30 @@ def extrair_sorteios_historicos(df):
     if len(cols_dezenas) < 6: return []
     return [list(map(int, row)) for row in df[cols_dezenas].values]
 
+@st.cache_data(ttl=3600)
+def carregar_dados_online():
+    url = "https://asloterias.com.br/lista-de-resultados-da-mega-sena"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        html = urllib.request.urlopen(req).read().decode('utf-8')
+        soup = BeautifulSoup(html, 'html.parser')
+        linhas = soup.find_all(text=re.compile(r'\d{4}\s*-\s*\d{2}/\d{2}/\d{4}'))
+        dados = []
+        for linha in linhas:
+            texto = linha.strip()
+            partes = texto.split(' - ')
+            if len(partes) >= 3:
+                concurso = int(partes[0].strip())
+                dezenas = [int(d) for d in partes[2].strip().split()]
+                if len(dezenas) == 6:
+                    dados.append([concurso] + dezenas)
+        if dados:
+            df = pd.DataFrame(dados, columns=['concurso', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
+            return df.sort_values(by='concurso').reset_index(drop=True)
+    except Exception:
+        return None
+    return None
+
 def calcular_atrasos_dezenas(sorteios):
     atrasos = {d: 0 for d in range(1, 61)}
     if not sorteios: return atrasos
@@ -181,18 +208,16 @@ def analisar_metricas_completas_grupos(sorteios):
         
     return pd.DataFrame(rows)
 
-def ranquear_grupos_quentes(sorteios, janela=50):
+def ranquear_grupos_quentes(sorteios):
     if not sorteios or len(sorteios) < 5:
         return pd.DataFrame([{'Grupo': k, 'Score': 0, 'Média Acertos': 0, '5+ Acertos': 0} for k in list(GRUPOS_40.keys())[:10]])
     
-    recentes = sorteios[-janela:]
     scores = {}
-    
     for nome, dezenas in GRUPOS_40.items():
         set_g = set(dezenas)
         pontos = 0
         acertos_list = []
-        for s in recentes:
+        for s in sorteios:
             ac = len(set(s).intersection(set_g))
             acertos_list.append(ac)
             if ac == 6: pontos += 100
@@ -212,18 +237,16 @@ def ranquear_grupos_quentes(sorteios, janela=50):
     
     return df_rank
 
-def ranquear_top_trincas_dinamicas(sorteios, janela=50, top_n=5):
+def ranquear_top_trincas_dinamicas(sorteios, top_n=5):
     if not sorteios: return pd.DataFrame()
-    recentes = sorteios[-janela:]
     nomes_grupos = list(GRUPOS_40.keys())
-    
     comb_trincas = list(combinations(nomes_grupos, 3))
     resultados = []
     
     for g1, g2, g3 in comb_trincas:
         pool_unificado = set(GRUPOS_40[g1] + GRUPOS_40[g2] + GRUPOS_40[g3])
         senas, quinas, quadras = 0, 0, 0
-        for s in recentes:
+        for s in sorteios:
             ac = len(set(s).intersection(pool_unificado))
             if ac == 6: senas += 1
             elif ac == 5: quinas += 1
@@ -249,40 +272,39 @@ def ranquear_top_trincas_dinamicas(sorteios, janela=50, top_n=5):
 st.title("🎲 Mega-Sena Analytics Pro — Modelo Gaussiano & Recalibragem Dinâmica")
 st.markdown("---")
 
-# UPLOAD DE PLANILHA HISTÓRICA
-st.sidebar.header("📁 Base Histórica")
-uploaded_file = st.sidebar.file_uploader("Upload da Planilha de Sorteios (CSV ou Excel)", type=["csv", "xlsx"])
+# CARREGAMENTO AUTOMÁTICO DE DADOS + BACKUP
+df_historico = carregar_dados_online()
 
-df_historico = None
-sorteios_historico = []
-ultimo_sorteio = []
-ultimo_concurso_num = "N/A"
+st.sidebar.header("📁 Base Histórica")
+uploaded_file = st.sidebar.file_uploader("Upload manual (opcional)", type=["csv", "xlsx"])
 
 if uploaded_file is not None:
     try:
-        if uploaded_file.name.endswith('.csv'):
-            df_historico = pd.read_csv(uploaded_file)
-        else:
-            df_historico = pd.read_excel(uploaded_file)
-            
-        cols_dezenas = [col for col in df_historico.columns if any(term in str(col).lower() for term in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(col).lower()][:6]
-
-        if len(cols_dezenas) == 6:
-            linha_sorteio = df_historico.iloc[-1][cols_dezenas]
-            ultimo_sorteio = [int(pd.to_numeric(v, errors='coerce')) for v in linha_sorteio]
-            
-            if 'concurso' in df_historico.columns.str.lower():
-                col_conc = [c for c in df_historico.columns if 'concurso' in str(c).lower()][0]
-                ultimo_concurso_num = df_historico.iloc[-1][col_conc]
-                
-            sorteios_historico = extrair_sorteios_historicos(df_historico)
-            st.sidebar.success("Base de dados carregada!")
-            st.sidebar.info(f"Último Concurso #{ultimo_concurso_num}: {ultimo_sorteio}")
-        else:
-            st.sidebar.warning("Não foram encontradas 6 colunas válidas de dezenas (ex: Bola1...Bola6).")
-            
+        df_historico = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+        st.sidebar.success("Base carregada via Upload!")
     except Exception as e:
-        st.sidebar.error(f"Erro ao ler arquivo: {e}")
+        st.sidebar.error(f"Erro no upload: {e}")
+elif df_historico is not None and not df_historico.empty:
+    st.sidebar.success("🌐 Conectado online (`asloterias`)")
+elif os.path.exists("mega_sena.xlsx"):
+    df_historico = pd.read_excel("mega_sena.xlsx")
+    st.sidebar.info("📂 Carregado de `mega_sena.xlsx`")
+else:
+    st.sidebar.warning("Nenhuma base encontrada.")
+
+# SELETOR DE ESCOPO DE CONCURSOS
+sorteios_historico_completos = extrair_sorteios_historicos(df_historico)
+ultimo_sorteio = sorteios_historico_completos[-1] if sorteios_historico_completos else []
+
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Escopo da Análise")
+if sorteios_historico_completos:
+    max_c = len(sorteios_historico_completos)
+    qtd_janela = st.sidebar.number_input("Últimos Concursos para Análise de Grupos:", min_value=10, max_value=max_c, value=min(100, max_c), step=10)
+    sorteios_historico = sorteios_historico_completos[-qtd_janela:]
+    st.sidebar.caption(f"Analisando últimos **{len(sorteios_historico)}** concursos.")
+else:
+    sorteios_historico = []
 
 atrasos_dezenas = calcular_atrasos_dezenas(sorteios_historico)
 
@@ -317,8 +339,8 @@ with tab_gerador:
     opcao_estrategia = st.radio(
         "Selecione o Método de Escolha das 40 Dezenas:",
         [
-            "Top 3 Grupos Individuais Quentes (Janela Móvel Últimos 50 Concursos)",
-            "Top Trinca Dinâmica (Ranking das Melhores Co-ocorrências)",
+            f"Top 3 Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
+            f"Top Trinca Dinâmica (Ranking nos Últimos {len(sorteios_historico)} Concursos)",
             "Seleção Manual (40 Dezenas)"
         ]
     )
@@ -326,10 +348,10 @@ with tab_gerador:
     pool_40 = []
     
     if opcao_estrategia.startswith("Top 3 Grupos"):
-        df_rank = ranquear_grupos_quentes(sorteios_historico, janela=50)
+        df_rank = ranquear_grupos_quentes(sorteios_historico)
         top_10 = df_rank.head(10)
         
-        st.markdown("**Top 10 Grupos Individuais nos Últimos 50 Concursos:**")
+        st.markdown(f"**Top 10 Grupos Individuais nos Últimos {len(sorteios_historico)} Concursos:**")
         st.dataframe(top_10[['Grupo', 'Score', 'Média Acertos', '5+ Acertos']], use_container_width=True)
         
         top_3_nomes = top_10.head(3)['Grupo'].tolist()
@@ -337,9 +359,9 @@ with tab_gerador:
         pool_40 = sorted(list(set(GRUPOS_40[top_3_nomes[0]] + GRUPOS_40[top_3_nomes[1]] + GRUPOS_40[top_3_nomes[2]])))
         
     elif opcao_estrategia.startswith("Top Trinca"):
-        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, janela=50, top_n=5)
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, top_n=5)
         if not df_top_trincas.empty:
-            st.markdown("**Top 5 Melhores Trincas dos Últimos 50 Concursos:**")
+            st.markdown(f"**Top 5 Melhores Trincas dos Últimos {len(sorteios_historico)} Concursos:**")
             st.dataframe(df_top_trincas[['Trinca', 'Score', 'Senas (6)', 'Quinas (5)', 'Quadras (4)']], use_container_width=True)
             
             trinca_escolhida = st.selectbox("Escolha uma das Top Trincas:", df_top_trincas['Trinca'].tolist())
@@ -347,7 +369,7 @@ with tab_gerador:
             g_list = row_trinca['Grupos']
             pool_40 = sorted(list(set(GRUPOS_40[g_list[0]] + GRUPOS_40[g_list[1]] + GRUPOS_40[g_list[2]])))
         else:
-            st.warning("Faça o upload do histórico para calcular a Top Trinca.")
+            st.warning("Carregue o histórico para calcular a Top Trinca.")
             pool_40 = GRUPOS_40["Grupo 01"]
         
     else:
@@ -365,18 +387,15 @@ with tab_gerador:
             aprovados = []
             
             for comb in comb_totais:
-                # Regra: Dezenas Fixas
                 if usar_fixas and dezenas_fixas_sel:
                     if not all(d in comb for d in dezenas_fixas_sel):
                         continue
 
-                # Validação de Filtros
                 s = sum(comb)
                 if not (min_soma <= s <= max_soma): continue
                 if sum(1 for d in comb if d % 2 == 0) not in pares_aceitos: continue
                 if sum(1 for d in comb if d in MOLDURA) not in moldura_aceita: continue
                 
-                # Sequências
                 c_s = sorted(comb)
                 seq, m_seq = 1, 1
                 for i in range(len(c_s)-1):
@@ -386,10 +405,7 @@ with tab_gerador:
                     else: seq = 1
                 if m_seq > max_seq: continue
                 
-                # Quadrantes
                 if len(set(get_quadrante(d) for d in comb)) < min_quad: continue
-                
-                # Repetidas
                 if ultimo_sorteio and sum(1 for d in comb if d in ultimo_sorteio) > max_repetidas: continue
                 
                 aprovados.append(comb)
@@ -403,7 +419,6 @@ with tab_gerador:
                 df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
                 st.dataframe(df_jogos, use_container_width=True)
                 
-                # Exportar para Excel
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_jogos.to_excel(writer, sheet_name='Jogos_Filtrados', index=False)
@@ -412,17 +427,17 @@ with tab_gerador:
         st.warning("Selecione pelo menos 24 dezenas para continuar.")
 
 with tab_metricas:
-    st.subheader("📊 Painel Histórico dos 24 Grupos (Concursos 1 ao Último)")
+    st.subheader(f"📊 Painel Histórico dos 24 Grupos (Escopo: {len(sorteios_historico)} Concursos)")
     if sorteios_historico:
         df_metricas_completas = analisar_metricas_completas_grupos(sorteios_historico)
         st.dataframe(df_metricas_completas, use_container_width=True)
     else:
-        st.warning("Carregue a planilha para calcular as métricas históricas completas.")
+        st.warning("Carregue a planilha para calcular as métricas.")
 
 with tab_trincas:
-    st.subheader("🔥 Ranking Dinâmico das Melhores Trincas (Últimos 50 Concursos)")
+    st.subheader(f"🔥 Ranking Dinâmico das Melhores Trincas (Escopo: {len(sorteios_historico)} Concursos)")
     if sorteios_historico:
-        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, janela=50, top_n=5)
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, top_n=5)
         st.dataframe(df_top_trincas, use_container_width=True)
     else:
         st.warning("Carregue a planilha para gerar o ranking das trincas.")
