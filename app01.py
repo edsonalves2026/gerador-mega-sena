@@ -103,24 +103,26 @@ def extrair_sorteios_historicos(df):
 
 @st.cache_data(ttl=3600)
 def carregar_dados_online():
+    import requests
     url = "https://asloterias.com.br/lista-de-resultados-da-mega-sena"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
-        html = urllib.request.urlopen(req).read().decode('utf-8')
-        soup = BeautifulSoup(html, 'html.parser')
-        linhas = soup.find_all(text=re.compile(r'\d{4}\s*-\s*\d{2}/\d{2}/\d{4}'))
-        dados = []
-        for linha in linhas:
-            texto = linha.strip()
-            partes = texto.split(' - ')
-            if len(partes) >= 3:
-                concurso = int(partes[0].strip())
-                dezenas = [int(d) for d in partes[2].strip().split()]
-                if len(dezenas) == 6:
-                    dados.append([concurso] + dezenas)
-        if dados:
-            df = pd.DataFrame(dados, columns=['concurso', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
-            return df.sort_values(by='concurso').reset_index(drop=True)
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            linhas = soup.find_all(text=re.compile(r'\d{4}\s*-\s*\d{2}/\d{2}/\d{4}'))
+            dados = []
+            for linha in linhas:
+                texto = linha.strip()
+                partes = texto.split(' - ')
+                if len(partes) >= 3:
+                    concurso = int(partes[0].strip())
+                    dezenas = [int(d) for d in partes[2].strip().split()]
+                    if len(dezenas) == 6:
+                        dados.append([concurso] + dezenas)
+            if dados:
+                df = pd.DataFrame(dados, columns=['concurso', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
+                return df.sort_values(by='concurso').reset_index(drop=True)
     except Exception:
         return None
     return None
