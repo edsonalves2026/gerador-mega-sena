@@ -1,18 +1,56 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import itertools
 from itertools import combinations
 import io
 
-# Configuração da Página
-st.set_page_config(
-    page_title="Sistema Analítico Mega-Sena",
-    page_icon="🎲",
-    layout="wide"
-)
+# Configuração da página web
+st.set_page_config(page_title="Gerador Mega-Sena", page_icon="🎲", layout="wide")
 
 # -----------------------------------------------------------------------------
-# 1. BASE DE DADOS DOS 24 GRUPOS DE 40 DEZENAS
+# 1. AUTENTICAÇÃO / TELA DE LOGIN
+# -----------------------------------------------------------------------------
+def verificar_autenticacao():
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
+
+    if st.session_state.autenticado:
+        # Botão de Logout na barra lateral
+        st.sidebar.markdown(f"👤 Logado como: **{st.session_state.get('usuario_atual', 'Usuário')}**")
+        if st.sidebar.button("🔒 Sair / Logout"):
+            st.session_state.autenticado = False
+            st.rerun()
+        return True
+
+    # Formulário de Login centralizado
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔒 Acesso Restrito")
+        st.subheader("Digite suas credenciais para acessar o gerador")
+        
+        usuario_input = st.text_input("Usuário:")
+        senha_input = st.text_input("Senha:", type="password")
+        
+        if st.button("Entrar", type="primary", use_container_width=True):
+            # Obtém credenciais dos secrets ou utiliza valores padrão
+            usuario_correto = st.secrets.get("APP_USER", "admin")
+            senha_correta = st.secrets.get("APP_PASSWORD", "123456")
+            
+            if usuario_input == usuario_correto and senha_input == senha_correta:
+                st.session_state.autenticado = True
+                st.session_state.usuario_atual = usuario_input
+                st.rerun()
+            else:
+                st.error("Usuário ou senha incorretos!")
+                
+    return False
+
+if not verificar_autenticacao():
+    st.stop()
+
+# -----------------------------------------------------------------------------
+# 2. BASE DE DADOS DOS 24 GRUPOS DE 40 DEZENAS
 # -----------------------------------------------------------------------------
 GRUPOS_40 = {
     "Grupo 01": [3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 16, 17, 19, 20, 24, 25, 27, 30, 32, 33, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 53, 54, 56, 57, 58, 59, 60],
@@ -52,7 +90,7 @@ TOP_TRINCAS = {
 MOLDURA = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 30, 31, 40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}
 
 # -----------------------------------------------------------------------------
-# 2. FUNÇÕES AUXILIARES E FILTROS MATEMÁTICOS
+# 3. FUNÇÕES AUXILIARES E FILTROS MATEMÁTICOS
 # -----------------------------------------------------------------------------
 def get_quadrante(dezena):
     row = (dezena - 1) // 10
@@ -62,23 +100,28 @@ def get_quadrante(dezena):
     elif row >= 3 and col < 5: return 3
     else: return 4
 
-def validar_jogo(comb, min_soma, max_soma, pares_aceitos, moldura_aceita, max_seq, min_quad, ultimo_concurso, max_repetidas):
-    # Filter 1: Soma Total
+def validar_jogo(comb, min_soma, max_soma, pares_aceitos, moldura_aceita, max_seq, min_quad, ultimo_concurso, max_repetidas, dezenas_fixas=None):
+    # Regra Adicional: Dezenas Fixas Obrigatórias
+    if dezenas_fixas:
+        if not all(d in comb for d in dezenas_fixas):
+            return False
+
+    # Filtro 1: Soma Total
     soma = sum(comb)
     if not (min_soma <= soma <= max_soma):
         return False
     
-    # Filter 2: Paridade
+    # Filtro 2: Paridade
     qtd_pares = sum(1 for d in comb if d % 2 == 0)
     if qtd_pares not in pares_aceitos:
         return False
     
-    # Filter 3: Moldura
+    # Filtro 3: Moldura
     qtd_moldura = sum(1 for d in comb if d in MOLDURA)
     if qtd_moldura not in moldura_aceita:
         return False
     
-    # Filter 4: Sequências Consecutivas
+    # Filtro 4: Sequências Consecutivas
     sorted_comb = sorted(comb)
     seq = 1
     max_seq_encontrada = 1
@@ -91,12 +134,12 @@ def validar_jogo(comb, min_soma, max_soma, pares_aceitos, moldura_aceita, max_se
     if max_seq_encontrada > max_seq:
         return False
 
-    # Filter 5: Quadrantes
+    # Filtro 5: Quadrantes
     quads = [get_quadrante(d) for d in comb]
     if len(set(quads)) < min_quad:
         return False
         
-    # Filter 6: Repetidas do Último Concurso
+    # Filtro 6: Repetidas do Último Concurso
     if ultimo_concurso:
         repetidas = sum(1 for d in comb if d in ultimo_concurso)
         if repetidas > max_repetidas:
@@ -105,7 +148,7 @@ def validar_jogo(comb, min_soma, max_soma, pares_aceitos, moldura_aceita, max_se
     return True
 
 # -----------------------------------------------------------------------------
-# 3. INTERFACE PRINCIPAL DO STREAMLIT
+# 4. INTERFACE PRINCIPAL
 # -----------------------------------------------------------------------------
 st.title("🎲 Mega-Sena Analytics Pro — Gerador de Apostas Preditivas")
 st.markdown("---")
@@ -127,7 +170,6 @@ if uploaded_file is not None:
             
         st.sidebar.success("Base de dados carregada!")
         
-        # Tenta capturar as últimas dezenas sorteadas
         cols_dezenas = [c for c in df_historico.columns if 'bola' in c.lower() or 'dezena' in c.lower() or 'd' in c.lower()][:6]
         if len(cols_dezenas) == 6:
             ultimo_sorteio = df_historico.iloc[-1][cols_dezenas].astype(int).tolist()
@@ -137,6 +179,22 @@ if uploaded_file is not None:
             st.sidebar.info(f"Último Concurso #{ultimo_concurso_num}: {ultimo_sorteio}")
     except Exception as e:
         st.sidebar.error(f"Erro ao ler arquivo: {e}")
+
+# REGRA: DEZENAS FIXAS (LIGA / DESLIGA)
+st.sidebar.header("📌 Regra: Dezenas Fixas")
+usar_fixas = st.sidebar.checkbox("Ativar Dezenas Fixas Obrigatórias", value=False)
+dezenas_fixas_sel = []
+
+if usar_fixas:
+    dezenas_fixas_sel = st.sidebar.multiselect(
+        "Escolha 1 ou 2 dezenas fixas (1 a 60):",
+        options=list(range(1, 61)),
+        max_selections=2
+    )
+    if not dezenas_fixas_sel:
+        st.sidebar.warning("Selecione pelo menos 1 dezena para aplicar o filtro.")
+    else:
+        st.sidebar.info(f"Dezenas fixas ativas em 100% dos jogos: {dezenas_fixas_sel}")
 
 # SELEÇÃO DO MODO DE ESTRATÉGIA
 st.sidebar.header("🎯 Estratégia de Pool de Entrada")
@@ -152,7 +210,6 @@ pool_40_dezenas = []
 if modo_selecionado.startswith("1."):
     st.subheader("Estratégia: Top 3 Grupos Individuais")
     st.info("Seleciona automaticamente os 3 grupos com melhor desempenho nas últimas 50 rodadas.")
-    # Seleção dos 3 primeiros grupos como padrão
     grupos_sel = ["Grupo 01", "Grupo 02", "Grupo 03"]
     pool_40_dezenas = sorted(list(set(GRUPOS_40[grupos_sel[0]] + GRUPOS_40[grupos_sel[1]] + GRUPOS_40[grupos_sel[2]])))
 
@@ -169,11 +226,11 @@ else:
     if len(pool_40_dezenas) != 40:
         st.warning(f"Atenção: Você selecionou {len(pool_40_dezenas)} dezenas. Por favor, ajuste para 40 dezenas.")
 
-# CONFIGURAÇÃO DOS FILTROS MATEMÁTICOS
+# CONFIGURAÇÃO DOS FILTROS MATEMÁTICOS RIGOROSOS
 st.sidebar.header("⚙️ Filtros Rigorosos")
 min_soma, max_soma = st.sidebar.slider("Intervalo da Soma Total", 100, 300, (160, 220))
-pares_aceitos = st.sidebar.multiselect("Quantidade de Pares Permetida", [0, 1, 2, 3, 4, 5, 6], default=[2, 3, 4])
-moldura_aceita = st.sidebar.multiselect("Quantidade na Moldura Permetida", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
+pares_aceitos = st.sidebar.multiselect("Quantidade de Pares Permitida", [0, 1, 2, 3, 4, 5, 6], default=[2, 3, 4])
+moldura_aceita = st.sidebar.multiselect("Quantidade na Moldura Permitida", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
 max_seq = st.sidebar.slider("Máximo de Dezenas Consecutivas", 1, 5, 2)
 min_quad = st.sidebar.slider("Mínimo de Quadrantes Presentes", 1, 4, 3)
 max_repetidas = st.sidebar.slider("Máximo de Repetidas do Último Concurso", 0, 4, 2)
@@ -183,34 +240,40 @@ st.markdown("---")
 if st.button("🚀 Processar Purificação (24 Dezenas) e Gerar Jogos", type="primary"):
     if len(pool_40_dezenas) < 24:
         st.error("O pool de dezenas selecionado é inferior a 24. Ajuste a seleção inicial.")
+    elif usar_fixas and not dezenas_fixas_sel:
+        st.error("A opção de dezenas fixas está ativa, mas nenhuma dezena foi selecionada.")
     else:
-        # PURIFICAÇÃO: Redução para as 24 melhores dezenas via score simulado/calculado
+        # Garante que as dezenas fixas façam parte do pool purificado
+        dezenas_fixas_ativas = dezenas_fixas_sel if usar_fixas else []
+        
         st.write(f"**Pool Inicial Definido:** {len(pool_40_dezenas)} dezenas.")
         
-        # Algoritmo de Ranqueamento/Purificação para 24 dezenas
-        scores = {d: np.random.uniform(50, 100) for d in pool_40_dezenas}
-        dezenas_purificadas_24 = sorted(sorted(scores, key=scores.get, reverse=True)[:24])
+        # Algoritmo de Purificação para 24 dezenas
+        scores = {d: np.random.uniform(50, 100) for d in pool_40_dezenas if d not in dezenas_fixas_ativas}
+        vagas_restantes = 24 - len(dezenas_fixas_ativas)
+        dezenas_purificadas_24 = sorted(sorted(scores, key=scores.get, reverse=True)[:vagas_restantes] + dezenas_fixas_ativas)
         
         st.success(f"**Purificação Concluída (24 Dezenas Selecionadas):** {dezenas_purificadas_24}")
+        if dezenas_fixas_ativas:
+            st.info(f"**Dezenas Fixas Aplicadas:** {dezenas_fixas_ativas}")
         
         # COMBINATÓRIA E FILTRAGEM
         st.write("Aplicando filtros matemáticos rigorosos...")
         jogos_validos = []
         
-        # Amostragem combinatória para alta performance na interface
         comb_totais = list(combinations(dezenas_purificadas_24, 6))
         
         for comb in comb_totais:
-            if validar_jogo(comb, min_soma, max_soma, pares_aceitos, moldura_aceita, max_seq, min_quad, ultimo_sorteio, max_repetidas):
+            if validar_jogo(comb, min_soma, max_soma, pares_aceitos, moldura_aceita, max_seq, min_quad, ultimo_sorteio, max_repetidas, dezenas_fixas_ativas):
                 jogos_validos.append(comb)
         
-        st.info(f"**Resultado:** De {len(comb_totais):,} combinações possíveis, **{len(jogos_validos):,} jogos aprovados** pelos 6 filtros.")
+        st.info(f"**Resultado:** De {len(comb_totais):,} combinações possíveis, **{len(jogos_validos):,} jogos aprovados** pelos filtros.")
         
         if jogos_validos:
             df_jogos = pd.DataFrame(jogos_validos, columns=[f"Bola {i+1}" for i in range(6)])
             st.dataframe(df_jogos.head(100), use_container_width=True)
             
-            # Exportação Excel / CSV
+            # Exportação Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df_jogos.to_excel(writer, sheet_name='Jogos_MegaSena', index=False)
