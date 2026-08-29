@@ -1,247 +1,244 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
-import itertools
-from datetime import datetime
+from itertools import combinations
 import random
 
-# Configuração da página web
-st.set_page_config(page_title="Gerador Lotofácil", page_icon="🎲", layout="wide")
+def carregar_dados_excel(caminho_planilha):
+    """Lê a planilha dinamicamente e extrai as 6 dezenas do histórico."""
+    df = pd.read_excel(caminho_planilha)
+    colunas_dezenas = ['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 'Bola6']
+    df['dezenas'] = df[colunas_dezenas].values.tolist()
+    return df
 
-# -----------------------------------------------------------------------------
-# AUTENTICAÇÃO / TELA DE LOGIN
-# -----------------------------------------------------------------------------
-def verificar_senha():
-    if "autenticado" not in st.session_state:
-        st.session_state.autenticado = False
+def obter_24_grupos_fixos():
+    """Retorna a matriz fixa com os 24 grupos de 40 dezenas cadastrados."""
+    return {
+        "Grupo_01": [3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 16, 17, 19, 20, 24, 25, 27, 30, 32, 33, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 53, 54, 56, 57, 58, 59, 60],
+        "Grupo_02": [1, 2, 4, 5, 6, 8, 10, 11, 13, 14, 17, 21, 22, 23, 24, 26, 27, 28, 29, 30, 32, 33, 35, 36, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 56, 59],
+        "Grupo_03": [1, 2, 4, 5, 6, 8, 10, 11, 12, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 28, 29, 30, 33, 34, 36, 37, 38, 39, 43, 44, 46, 47, 48, 50, 51, 52, 53, 55, 56, 60],
+        "Grupo_04": [1, 2, 3, 5, 7, 8, 9, 15, 16, 17, 18, 20, 22, 23, 26, 27, 28, 31, 32, 33, 34, 35, 37, 38, 39, 41, 42, 43, 45, 48, 49, 50, 51, 52, 53, 54, 55, 57, 58, 59],
+        "Grupo_05": [1, 4, 7, 9, 10, 13, 14, 15, 16, 18, 19, 20, 21, 23, 24, 26, 28, 29, 30, 31, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 51, 54, 55, 56, 57, 58, 60],
+        "Grupo_06": [2, 3, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 19, 20, 22, 24, 25, 27, 28, 29, 30, 31, 32, 33, 36, 38, 40, 41, 44, 46, 47, 50, 52, 53, 55, 57, 58, 59, 60],
+        "Grupo_07": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 21, 23, 24, 25, 27, 29, 31, 32, 33, 34, 35, 36, 37, 38, 42, 43, 44, 48, 49, 51, 52, 56, 57, 58, 59],
+        "Grupo_08": [1, 2, 3, 6, 9, 11, 12, 13, 14, 16, 17, 18, 19, 20, 23, 24, 26, 31, 32, 34, 35, 36, 37, 38, 39, 40, 42, 43, 45, 46, 47, 48, 49, 50, 52, 53, 54, 55, 58, 60],
+        "Grupo_09": [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 15, 17, 19, 21, 22, 23, 25, 27, 28, 29, 30, 31, 34, 35, 36, 37, 39, 41, 45, 46, 48, 50, 51, 53, 54, 56, 57, 58, 59, 60],
+        "Grupo_10": [2, 4, 6, 7, 8, 10, 14, 15, 16, 17, 18, 19, 22, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 35, 38, 39, 40, 42, 43, 45, 47, 48, 49, 50, 51, 52, 54, 56, 57, 60],
+        "Grupo_11": [4, 7, 8, 9, 10, 12, 13, 15, 18, 20, 22, 23, 25, 27, 29, 30, 31, 32, 33, 36, 37, 38, 40, 41, 42, 43, 44, 45, 47, 49, 50, 51, 52, 53, 54, 55, 56, 58, 59, 60],
+        "Grupo_12": [1, 2, 3, 5, 9, 10, 11, 12, 14, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 35, 36, 37, 40, 41, 43, 44, 46, 47, 48, 50, 51, 52, 54, 57, 59, 60],
+        "Grupo_13": [1, 3, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 20, 21, 24, 25, 26, 27, 28, 31, 33, 35, 37, 38, 39, 40, 42, 43, 44, 45, 46, 47, 50, 53, 55, 56, 57, 58, 59],
+        "Grupo_14": [1, 3, 4, 5, 8, 9, 12, 13, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 29, 31, 32, 33, 34, 36, 39, 40, 41, 42, 44, 46, 47, 48, 49, 53, 54, 55, 56, 59],
+        "Grupo_15": [1, 2, 3, 6, 8, 10, 11, 12, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 40, 41, 43, 45, 48, 49, 51, 52, 54, 55, 56, 58],
+        "Grupo_16": [2, 3, 4, 5, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 29, 30, 31, 34, 35, 37, 38, 39, 42, 43, 46, 47, 49, 50, 51, 52, 54, 56, 57, 58, 59],
+        "Grupo_17": [2, 3, 4, 6, 7, 9, 10, 12, 14, 17, 20, 21, 22, 23, 24, 25, 26, 28, 29, 31, 32, 33, 34, 35, 36, 38, 39, 41, 43, 44, 45, 46, 48, 49, 50, 53, 55, 57, 58, 60],
+        "Grupo_18": [2, 5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 23, 24, 25, 26, 27, 28, 30, 31, 33, 34, 35, 36, 37, 39, 41, 42, 44, 47, 48, 50, 51, 52, 53, 57, 58, 59, 60],
+        "Grupo_19": [1, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 30, 32, 33, 34, 35, 37, 38, 40, 41, 42, 44, 47, 48, 49, 50, 51, 54, 55, 59, 60],
+        "Grupo_20": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 22, 23, 24, 25, 28, 30, 32, 36, 38, 40, 43, 44, 45, 46, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59],
+        "Grupo_21": [1, 2, 5, 7, 8, 9, 10, 11, 14, 15, 16, 19, 20, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 38, 39, 41, 42, 44, 45, 46, 48, 49, 51, 52, 54, 57, 58, 60],
+        "Grupo_22": [1, 3, 4, 5, 8, 9, 10, 11, 12, 17, 18, 19, 21, 22, 25, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 46, 48, 49, 51, 52, 53, 54, 56, 57],
+        "Grupo_23": [1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 13, 14, 17, 18, 21, 23, 24, 25, 27, 28, 29, 32, 34, 36, 37, 41, 43, 45, 47, 49, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60],
+        "Grupo_24": [4, 5, 6, 7, 10, 11, 12, 15, 16, 17, 18, 19, 20, 22, 24, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38, 40, 42, 45, 46, 47, 48, 50, 51, 52, 53, 55, 56, 60]
+    }
 
-    if st.session_state.autenticado:
-        return True
-
-    st.title("🔒 Acesso Restrito")
-    st.subheader("Digite a senha para acessar o gerador da Lotofácil")
+def calcular_score_decaimento_vetorizado(df_janela, grupos):
+    n = len(df_janela)
+    pesos = np.linspace(1.0, 2.0, n)
+    scores = {}
+    sorteados_matriz = np.array(df_janela['dezenas'].tolist())
     
-    senha_digitada = st.text_input("Senha:", type="password")
-    
-    if st.button("Entrar"):
-        senha_correta = st.secrets.get("APP_PASSWORD", "123456")
+    for nome_g, grupo in grupos.items():
+        set_g = set(grupo)
+        acertos = np.array([len(set_g.intersection(set(row))) for row in sorteados_matriz])
+        pontos_max = (acertos >= 5) * 50 * pesos
+        pontos_inter = (acertos == 4) * 20 * pesos
+        pontos_media = (acertos / 6) * 10 * pesos
+        scores[nome_g] = np.sum(pontos_max + pontos_inter + pontos_media)
         
-        if senha_digitada == senha_correta:
-            st.session_state.autenticado = True
-            st.rerun()
-        else:
-            st.error("Senha incorreta!")
-            
-    return False
+    return pd.Series(scores).sort_values(ascending=False)
 
-if not verificar_senha():
-    st.stop()
-
-# -----------------------------------------------------------------------------
-# TÍTULO E INTERFACE PRINCIPAL
-# -----------------------------------------------------------------------------
-st.title("🎲 Gerador Otimizado Lotofácil")
-st.write("Faça o upload da planilha atualizada para recalibrar os grupos estatísticos com base nos últimos 25 concursos reais.")
-
-# Constantes e Grupos Originais
-GRUPOS_56 = {
-    'GRUPO 01': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 22, 23, 24],
-    'GRUPO 02': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 21, 23],
-    'GRUPO 03': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 24],
-    'GRUPO 04': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 22, 25],
-    'GRUPO 05': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 21, 24, 25],
-    'GRUPO 06': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 19, 21, 22, 23, 24, 25],
-    'GRUPO 07': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 24, 25],
-    'GRUPO 08': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 18, 19, 20, 23, 25],
-    'GRUPO 09': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 20, 21, 22, 23, 24, 25],
-    'GRUPO 10': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 23, 24],
-    'GRUPO 11': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 19, 20, 21, 22, 25],
-    'GRUPO 12': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 21, 23, 24],
-    'GRUPO 13': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18, 19, 21, 22, 25],
-    'GRUPO 14': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 17, 18, 20, 23, 24, 25],
-    'GRUPO 15': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 17, 19, 20, 22, 23, 25],
-    'GRUPO 16': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 19, 20, 21, 22, 23],
-    'GRUPO 17': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 19, 20, 22, 24, 25],
-    'GRUPO 18': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 17, 18, 19, 20, 21, 22, 24],
-    'GRUPO 19': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 20, 21, 22, 24],
-    'GRUPO 20': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 17, 18, 19, 22, 23, 24, 25],
-    'GRUPO 21': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 21, 22, 23, 24, 25],
-    'GRUPO 22': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 22],
-    'GRUPO 23': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 20, 21, 23, 25],
-    'GRUPO 24': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 21, 22, 24, 25],
-    'GRUPO 25': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 18, 20, 22, 23, 24, 25],
-    'GRUPO 26': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16, 17, 18, 19, 22, 23, 25],
-    'GRUPO 27': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16, 17, 20, 21, 22, 23, 24],
-    'GRUPO 28': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 17, 18, 19, 20, 21, 24, 25],
-    'GRUPO 29': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 17, 19, 20, 23, 24, 25],
-    'GRUPO 30': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 18, 19, 21, 22, 23, 24],
-    'GRUPO 31': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 18, 20, 21, 22, 23, 25],
-    'GRUPO 32': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 18, 19, 21, 22, 23, 24],
-    'GRUPO 33': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 34': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 17, 18, 19, 20, 21, 23, 24, 25],
-    'GRUPO 35': [1, 2, 3, 4, 5, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 36': [1, 2, 3, 6, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 37': [1, 2, 3, 6, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 38': [1, 2, 4, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 39': [1, 2, 4, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 40': [1, 2, 5, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 41': [1, 3, 4, 6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 42': [1, 3, 5, 7, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 43': [1, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 44': [1, 4, 5, 6, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 45': [1, 4, 5, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 46': [1, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 47': [2, 3, 4, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 48': [2, 3, 5, 6, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 49': [2, 3, 5, 7, 8, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 50': [2, 4, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 51': [2, 4, 6, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 52': [2, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 53': [3, 4, 5, 6, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 54': [3, 4, 5, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 55': [3, 4, 6, 7, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-    'GRUPO 56': [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
-}
-
-MOLDURA = {1, 2, 3, 4, 5, 6, 10, 11, 15, 16, 20, 21, 22, 23, 24, 25}
-PRIMOS = {2, 3, 5, 7, 11, 13, 17, 19, 23}
-MESTRAS = {1, 2, 3, 5, 9, 10, 11, 13, 20, 25}
-
-def seq_max(comb):
-    max_c, curr_c = 1, 1
-    for i in range(1, 15):
-        if comb[i] == comb[i - 1] + 1:
-            curr_c += 1
-            if curr_c > max_c: max_c = curr_c
-        else: curr_c = 1
-    return max_c
-
-def calcular_atrasos(resultados_25):
+def calcular_atrasos_historico(df_historico, pool_dezenas):
+    historico_reverso = df_historico['dezenas'].tolist()[::-1]
     atrasos = {}
-    for dezena in range(1, 26):
+    for d in pool_dezenas:
         atraso = 0
-        for concurso in resultados_25:
-            if dezena in concurso:
+        for sorteio in historico_reverso:
+            if d in sorteio:
                 break
             atraso += 1
-        atrasos[dezena] = atraso
+        atrasos[d] = atraso
+    return atrasos
+
+def purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_atrasadas=4):
+    df_j15 = df_historico.iloc[-15:]
+    df_j50 = df_historico.iloc[-50:]
     
-    dezenas_ordenadas = sorted(atrasos.keys(), key=lambda d: atrasos[d], reverse=True)
-    return dezenas_ordenadas, atrasos
-
-def validar_jogo(comb, prev_draw, set_grupo, dezenas_obrigatorias_set):
-    if not (160 <= sum(comb) <= 220): return False
-    j_set = set(comb)
-    obrig = dezenas_obrigatorias_set.intersection(set_grupo)
-    if obrig and not obrig.issubset(j_set): return False
-    if len(j_set.intersection(prev_draw)) not in [8, 9, 10, 11]: return False
-    if len(j_set.intersection(MOLDURA)) not in [8, 9, 10, 11]: return False
-    if len(j_set.intersection(PRIMOS)) not in [4, 5, 6, 7]: return False
-    if len(j_set.intersection(MESTRAS)) not in [5, 6, 7, 8]: return False
-    if sum(1 for x in comb if x % 2 != 0) not in [6, 7, 8, 9]: return False
-    if seq_max(comb) not in [3, 4, 5, 6, 7]: return False
-    return True
-
-# -----------------------------------------------------------------------------
-# UPLOAD DA PLANILHA
-# -----------------------------------------------------------------------------
-uploaded_file = st.file_uploader("📂 Faça o upload da planilha Excel atualizada (.xlsx)", type=["xlsx"])
-
-if uploaded_file is not None:
-    df = pd.read_excel(uploaded_file, sheet_name='LOTOFÁCIL')
-    col_bolas = [f'Bola{i}' for i in range(1, 16)]
-
-    # Identifica o último concurso e informações da planilha
-    last_contest_row = df.iloc[-1]
-    last_contest_num = int(last_contest_row.iloc[0]) if 'Concurso' in df.columns or len(df.columns) > 0 else len(df)
+    arr_j15 = np.concatenate(df_j15['dezenas'].values)
+    arr_j50 = np.concatenate(df_j50['dezenas'].values)
+    arr_geral = np.concatenate(df_historico['dezenas'].values)
     
-    # Exibe a mensagem de status com a última atualização / concurso registrado
-    st.info(f"📊 **Status da Planilha:** Último concurso registrado na base: **Concurso {last_contest_num}**. Análise calibrada usando os últimos 25 concursos do arquivo.")
-
-    # Extrai os últimos 25 concursos reais direto da planilha carregada (do mais recente para o mais antigo)
-    last_25_df = df.iloc[-25:].iloc[::-1]  # Inverte para que o mais recente fique no topo para a contagem de atraso
-    ultimos_25_concursos = []
-    for _, row in last_25_df.iterrows():
-        concurso_lista = row[col_bolas].astype(int).tolist()
-        ultimos_25_concursos.append(concurso_lista)
-
-    # Calcula os atrasos dinamicamente baseados nos últimos 25 concursos reais da planilha
-    dezenas_mais_atrasadas, mapa_atrasos = calcular_atrasos(ultimos_25_concursos)
-
-    st.subheader("Filtro: Dezenas Obrigatórias")
-    modo_selecao = st.radio(
-        "Como deseja escolher a dezena obrigatória?",
-        ["Escolher manualmente", "Sugestão por atraso (últimos 25 concursos da planilha)"],
-        horizontal=True
-    )
-
-    if modo_selecao == "Escolher manualmente":
-        dezenas_selecionadas = st.multiselect(
-            "Selecione a(s) dezena(s) obrigatória(s):",
-            options=list(range(1, 26)),
-            default=[]
-        )
+    freq_j15 = dict(zip(*np.unique(arr_j15, return_counts=True)))
+    freq_j50 = dict(zip(*np.unique(arr_j50, return_counts=True)))
+    freq_geral = dict(zip(*np.unique(arr_geral, return_counts=True)))
+    
+    scores_dezenas = {}
+    max_j15 = max(freq_j15.values()) if freq_j15 else 1
+    max_j50 = max(freq_j50.values()) if freq_j50 else 1
+    max_geral = max(freq_geral.values()) if freq_geral else 1
+    
+    for d in pool_bruto:
+        score_15 = (freq_j15.get(d, 0) / max_j15) * 0.50
+        score_50 = (freq_j50.get(d, 0) / max_j50) * 0.30
+        score_geral = (freq_geral.get(d, 0) / max_geral) * 0.20
+        scores_dezenas[d] = score_15 + score_50 + score_geral
+        
+    dezenas_ordenadas = sorted(pool_bruto, key=lambda d: scores_dezenas[d], reverse=True)
+    
+    vagas_quentes = total_alvo - vagas_atrasadas
+    top_quentes = dezenas_ordenadas[:vagas_quentes]
+    restantes = dezenas_ordenadas[vagas_quentes:]
+    
+    atrasos_dict = calcular_atrasos_historico(df_historico, restantes)
+    
+    # ---- ROTAÇÃO INTELIGENTE DAS ATRASADAS ----
+    candidatas_atrasadas = sorted(restantes, key=lambda d: atrasos_dict[d], reverse=True)
+    pool_candidatas_atrasadas = candidatas_atrasadas[:vagas_atrasadas * 2]
+    
+    if len(pool_candidatas_atrasadas) >= vagas_atrasadas:
+        pesos_atraso = [atrasos_dict[d] for d in pool_candidatas_atrasadas]
+        soma_pesos = sum(pesos_atraso)
+        pesos_norm = [p / soma_pesos for p in pesos_atraso] if soma_pesos > 0 else None
+        
+        top_atrasadas = sorted(np.random.choice(
+            pool_candidatas_atrasadas, 
+            size=vagas_atrasadas, 
+            replace=False, 
+            p=pesos_norm
+        ).tolist())
     else:
-        opcoes_formatadas = [f"Dezena {d} ({mapa_atrasos[d]} concursos sem sair nos últimos 25)" for d in dezenas_mais_atrasadas]
+        top_atrasadas = sorted(candidatas_atrasadas[:vagas_atrasadas])
+    # -------------------------------------------
+    
+    universo_final = sorted(top_quentes + top_atrasadas)
+    return universo_final
+
+def obter_faixa_repetidas_dinamica(df_historico):
+    ultimos_5 = df_historico.iloc[-5:]
+    repeticoes = []
+    for i in range(1, len(ultimos_5)):
+        rep = len(set(ultimos_5.iloc[i]['dezenas']).intersection(set(ultimos_5.iloc[i-1]['dezenas'])))
+        repeticoes.append(rep)
+    
+    media = np.mean(repeticoes) if repeticoes else 1.0
+    if media <= 1.2:
+        return [0, 1]
+    elif media <= 2.0:
+        return [1, 2]
+    else:
+        return [1, 2, 3]
+
+def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas):
+    somas = np.sum(matriz_apostas, axis=1)
+    mask_soma = (somas >= 140) & (somas <= 220)
+    
+    pares = np.sum(matriz_apostas % 2 == 0, axis=1)
+    mask_paridade = (pares >= 2) & (pares <= 4)
+    
+    moldura_set = {1,2,3,4,5,6,7,8,9,10,11,20,21,30,31,40,41,50,51,52,53,54,55,56,57,58,59,60}
+    qtd_moldura = np.sum(np.isin(matriz_apostas, list(moldura_set)), axis=1)
+    mask_moldura = (qtd_moldura >= 2) & (qtd_moldura <= 5)
+    
+    qtd_repetidos = np.sum(np.isin(matriz_apostas, ultimo_concurso), axis=1)
+    mask_repetidos = np.isin(qtd_repetidos, faixa_repetidas)
+    
+    diferencas = np.diff(matriz_apostas, axis=1)
+    mask_consecutivos = (np.sum(diferencas == 1, axis=1) <= 1)
+    
+    q1 = np.sum((matriz_apostas >= 1) & (matriz_apostas <= 15), axis=1)
+    q2 = np.sum((matriz_apostas >= 16) & (matriz_apostas <= 30), axis=1)
+    q3 = np.sum((matriz_apostas >= 31) & (matriz_apostas <= 45), axis=1)
+    q4 = np.sum((matriz_apostas >= 46) & (matriz_apostas <= 60), axis=1)
+    
+    quadrantes_matriz = np.column_stack([q1, q2, q3, q4])
+    zeros_count = np.sum(quadrantes_matriz == 0, axis=1)
+    max_quadrante = np.max(quadrantes_matriz, axis=1)
+    mask_quadrantes = (zeros_count <= 1) & (max_quadrante <= 3)
+    
+    return mask_soma & mask_paridade & mask_moldura & mask_repetidos & mask_consecutivos & mask_quadrantes
+
+def exportar_apostas_txt(apostas, pool, faixa_repetidas, caminho_txt="jogos_gerados.txt"):
+    with open(caminho_txt, "w", encoding="utf-8") as file:
+        file.write("==================================================\n")
+        file.write("           MEGA-SENA - JOGOS GERADOS              \n")
+        file.write("==================================================\n\n")
         
-        selecao_formatada = st.multiselect(
-            "Dezenas ordenadas pelo maior atraso:",
-            options=opcoes_formatadas,
-            default=opcoes_formatadas[:2] # Sugere as 2 mais atrasadas por padrão
-        )
+        file.write(f"POOL SELECIONADO COM ROTAÇÃO (24 DEZENAS):\n")
+        file.write(f"{sorted(pool)}\n\n")
         
-        dezenas_selecionadas = [int(item.split()[1]) for item in selecao_formatada]
+        file.write(f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n")
+        file.write("==================================================\n")
+        file.write(f"APOSTAS SIMPLES VALIDADAS ({len(apostas)} JOGOS):\n")
+        file.write("==================================================\n\n")
+        
+        for idx, aposta in enumerate(apostas, 1):
+            aposta_fmt = " - ".join(f"{num:02d}" for num in sorted(aposta))
+            file.write(f"Jogo {idx:02d}: {aposta_fmt}\n")
+            
+        file.write("\n==================================================\n")
+        file.write("Filtros Aplicados: Soma (140-220), Paridade (2-4P),\n")
+        file.write("Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par)\n")
+        file.write("e Quadrantes (máx 1 zerado, máx 3 por qdt).\n")
+        file.write("==================================================\n")
 
-    st.write(f"Dezenas selecionadas para o gerador: **{dezenas_selecionadas}**")
-    dezenas_obrigatorias_set = set(dezenas_selecionadas)
+def executar_gerador_mega_sena(caminho_planilha, limite_apostas_geradas=30, caminho_txt="jogos_gerados.txt", dezenas_manuais=None):
+    df_historico = carregar_dados_excel(caminho_planilha)
+    grupos = obter_24_grupos_fixos()
+    ultimo_concurso = df_historico.iloc[-1]['dezenas']
+    
+    if dezenas_manuais and len(dezenas_manuais) > 0:
+        print(f"-> Usando pool de dezenas fornecido manualmente ({len(dezenas_manuais)} dezenas).")
+        pool_bruto = sorted(list(set(dezenas_manuais)))
+    else:
+        print("-> Nenhuma dezena manual fornecida. Executando seleção automática via Top 5 Grupos...")
+        janela_50 = df_historico.iloc[-50:]
+        ranking_grupos = calcular_score_decaimento_vetorizado(janela_50, grupos)
+        top_5_grupos = ranking_grupos.head(5).index.tolist()
+        pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
+    
+    pool_purificado = purificar_pool_multi_camada(
+        pool_bruto=pool_bruto,
+        df_historico=df_historico,
+        total_alvo=24,
+        vagas_atrasadas=4
+    )
+    
+    faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
+    
+    todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
+    mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas)
+    apostas_filtradas = todas_combinacoes[mask_validos]
+    
+    # Embaralha os jogos válidos antes de fatiar para garantir diversidade nas execuções
+    np.random.shuffle(apostas_filtradas)
+    
+    apostas_finais = apostas_filtradas[:limite_apostas_geradas].tolist()
+    
+    exportar_apostas_txt(apostas_finais, pool_purificado, faixa_repetidas, caminho_txt)
+    
+    return apostas_finais, pool_purificado, faixa_repetidas
 
-    if st.button("Gerar Palpites"):
-        prev_draw = set(last_contest_row[col_bolas].astype(int).values)
-
-        scores = {}
-        # Recalibra os grupos com base estritamente nos últimos 25 concursos da planilha
-        last_25_score_df = df.iloc[-25:]
-        for g_name, nums in GRUPOS_56.items():
-            set_g = set(nums)
-            c_14_15, c_13, total_hits = 0, 0, 0
-            for _, row in last_25_score_df.iterrows():
-                draw = set(row[col_bolas].astype(int).values)
-                hits = len(set_g.intersection(draw))
-                total_hits += hits
-                if hits >= 14: c_14_15 += 1
-                elif hits == 13: c_13 += 1
-            media = total_hits / 25
-            score = (c_14_15 * 50) + (c_13 * 10) + (media * 5)
-            scores[g_name] = (score, c_14_15, c_13, media)
-
-        top_5_groups = sorted(scores.items(), key=lambda x: x[1][0], reverse=True)[:5]
-        top_5_names = [g[0] for g in top_5_groups]
-
-        jogos_gerados = []
-        for g_name in top_5_names:
-            nums = GRUPOS_56[g_name]
-            set_g = set(nums)
-            sorted_g = sorted(nums)
-            validos = [c for c in itertools.combinations(sorted_g, 15) if validar_jogo(c, prev_draw, set_g, dezenas_obrigatorias_set)]
-            if validos:
-                jogos_gerados.extend(random.sample(validos, min(len(validos), 4)))
-
-        st.success(f"Grupos Quentes identificados na planilha: {', '.join(top_5_names)}")
-
-        # Exibe os jogos na tela
-        conteudo_txt = f"=== PALPITES CONCURSO {last_contest_num + 1} ===\n\n"
-        for idx, jogo in enumerate(jogos_gerados, 1):
-            jogo_str = " ".join([f"{x:02d}" for x in jogo])
-            conteudo_txt += f"Jogo {idx:02d}: {jogo_str}\n"
-
-        st.text_area("Jogos Gerados:", conteudo_txt, height=300)
-
-        # Botão para download do .txt
-        st.download_button(
-            label="Baixar TXT dos Jogos",
-            data=conteudo_txt,
-            file_name=f"palpites_concurso_{last_contest_num + 1}.txt",
-            mime="text/plain"
+if __name__ == "__main__":
+    CAMINHO_PLANILHA = "mega_sena.xlsx" 
+    MEU_POOL_MANUAL = []
+    
+    try:
+        # Aumentado para 30 apostas geradas (você pode alterar para 40, 50, etc.)
+        QTD_JOGOS = 30 
+        
+        jogos, pool, faixa = executar_gerador_mega_sena(
+            caminho_planilha=CAMINHO_PLANILHA, 
+            limite_apostas_geradas=QTD_JOGOS, 
+            caminho_txt="jogos_gerados.txt",
+            dezenas_manuais=MEU_POOL_MANUAL
         )
-else:
-    st.warning("⚠️ Por favor, faça o upload da sua planilha Excel (.xlsx) da Lotofácil para habilitar a geração de palpites e o cálculo estatístico.")
+        print(f"Sucesso! {len(jogos)} apostas geradas e salvas em 'jogos_gerados.txt'.")
+    except FileNotFoundError:
+        print(f"Certifique-se de que o arquivo '{CAMINHO_PLANILHA}' está no mesmo diretório do script.")
