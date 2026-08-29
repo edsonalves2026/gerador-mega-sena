@@ -6,7 +6,7 @@ from itertools import combinations
 import io
 import os
 import random
-import urllib.request
+import requests
 from bs4 import BeautifulSoup
 import re
 
@@ -14,7 +14,7 @@ import re
 st.set_page_config(page_title="Gerador Mega-Sena", page_icon="🎲", layout="wide")
 
 # -----------------------------------------------------------------------------
-# 1. AUTENTICAÇÃO / TELA DE LOGIN
+# 1. AUTENTICAÇÃO / TELA DE LOGIN (CORRIGIDO)
 # -----------------------------------------------------------------------------
 def verificar_autenticacao():
     if "autenticado" not in st.session_state:
@@ -36,10 +36,15 @@ def verificar_autenticacao():
         senha_input = st.text_input("Senha:", type="password")
         
         if st.button("Entrar", type="primary", use_container_width=True):
-            usuario_correto = st.secrets.get("APP_USER", "MEGA-SENA")
-            senha_correta = st.secrets.get("APP_PASSWORD", "2026")
+            # Leitura correta do arquivo secrets.toml
+            senhas_validas = st.secrets.get("passwords", {})
             
-            if usuario_input == usuario_correto and senha_input == senha_correta:
+            # Validação via secrets ou padrão de emergência
+            if usuario_input in senhas_validas and str(senhas_validas[usuario_input]) == senha_input:
+                st.session_state.autenticado = True
+                st.session_state.usuario_atual = usuario_input
+                st.rerun()
+            elif usuario_input == "MEGA-SENA" and senha_input == "2026":
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
                 st.rerun()
@@ -101,31 +106,41 @@ def extrair_sorteios_historicos(df):
     if len(cols_dezenas) < 6: return []
     return [list(map(int, row)) for row in df[cols_dezenas].values]
 
+# SCRAPING CORRIGIDO
 @st.cache_data(ttl=3600)
 def carregar_dados_online():
-    import requests
     url = "https://asloterias.com.br/lista-de-resultados-da-mega-sena"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            linhas = soup.find_all(text=re.compile(r'\d{4}\s*-\s*\d{2}/\d{2}/\d{4}'))
+            container = soup.find('div', class_='col-md-8')
+            if not container: return None
+            
+            texto_completo = container.get_text(separator='\n')
+            padrao = re.compile(r'(\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})')
+            
             dados = []
-            for linha in linhas:
-                texto = linha.strip()
-                partes = texto.split(' - ')
-                if len(partes) >= 3:
-                    concurso = int(partes[0].strip())
-                    dezenas = [int(d) for d in partes[2].strip().split()]
-                    if len(dezenas) == 6:
-                        dados.append([concurso] + dezenas)
+            for match in padrao.finditer(texto_completo):
+                conc, data, d1, d2, d3, d4, d5, d6 = match.groups()
+                dados.append([int(conc), int(d1), int(d2), int(d3), int(d4), int(d5), int(d6)])
+            
             if dados:
                 df = pd.DataFrame(dados, columns=['concurso', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
                 return df.sort_values(by='concurso').reset_index(drop=True)
     except Exception:
         return None
     return None
+
+def carregar_dados():
+    caminho_local = "mega_sena.xlsx"
+    if os.path.exists(caminho_local):
+        try:
+            return pd.read_excel(caminho_local)
+        except Exception:
+            pass
+    return carregar_dados_online()
 
 def calcular_atrasos_dezenas(sorteios):
     atrasos = {d: 0 for d in range(1, 61)}
@@ -274,8 +289,8 @@ def ranquear_top_trincas_dinamicas(sorteios, top_n=5):
 st.title("🎲 Mega-Sena Analytics Pro — Modelo Gaussiano & Recalibragem Dinâmica")
 st.markdown("---")
 
-# CARREGAMENTO AUTOMÁTICO DE DADOS + BACKUP
-df_historico = carregar_dados_online()
+# CARREGAMENTO INTEGRADO DOS DADOS
+df_historico = carregar_dados()
 
 st.sidebar.header("📁 Base Histórica")
 uploaded_file = st.sidebar.file_uploader("Upload manual (opcional)", type=["csv", "xlsx"])
@@ -288,9 +303,6 @@ if uploaded_file is not None:
         st.sidebar.error(f"Erro no upload: {e}")
 elif df_historico is not None and not df_historico.empty:
     st.sidebar.success("🌐 Conectado online (`asloterias`)")
-elif os.path.exists("mega_sena.xlsx"):
-    df_historico = pd.read_excel("mega_sena.xlsx")
-    st.sidebar.info("📂 Carregado de `mega_sena.xlsx`")
 else:
     st.sidebar.warning("Nenhuma base encontrada.")
 
