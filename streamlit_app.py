@@ -34,8 +34,8 @@ def verificar_autenticacao():
         
         if st.button("Entrar", type="primary", use_container_width=True):
             # Obtém credenciais dos secrets ou utiliza valores padrão
-            usuario_correto = st.secrets.get("APP_USER", "admin")
-            senha_correta = st.secrets.get("APP_PASSWORD", "123456")
+            usuario_correto = st.secrets.get("APP_USER", "MEGA-SENA")
+            senha_correta = st.secrets.get("APP_PASSWORD", "2026")
             
             if usuario_input == usuario_correto and senha_input == senha_correta:
                 st.session_state.autenticado = True
