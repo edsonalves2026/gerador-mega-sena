@@ -42,7 +42,7 @@ if not verificar_senha():
 
 @st.cache_data
 def carregar_dados_excel(file_uploader_or_path):
-    """Lê a planilha dinamicamente e extrai as 6 dezenas do histórico."""
+    """Lê a planilha dinamicamente e extrai as 6 dezenas e metadados do histórico."""
     df = pd.read_excel(file_uploader_or_path)
     colunas_dezenas = ['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 'Bola6']
     df['dezenas'] = df[colunas_dezenas].values.tolist()
@@ -77,25 +77,8 @@ def obter_24_grupos_fixos():
         "Grupo_24": [4, 5, 6, 7, 10, 11, 12, 15, 16, 17, 18, 19, 20, 22, 24, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38, 40, 42, 45, 46, 47, 48, 50, 51, 52, 53, 55, 56, 60]
     }
 
-def reduzir_40_para_24_dezenas(dezenas_40, df_historico):
-    ultimos_50 = df_historico[['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 'Bola6']].tail(50).values.flatten()
-    todos_jogos = df_historico['dezenas'].tolist()
-    
-    pontuacao = {}
-    for d in dezenas_40:
-        freq_recente = np.sum(ultimos_50 == d)
-        atraso = 0
-        for jogo in reversed(todos_jogos):
-            if d in jogo:
-                break
-            atraso += 1
-        score = (freq_recente * 0.7) + (min(atraso, 15) * 0.3)
-        pontuacao[d] = score
-
-    dezenas_ordenadas = sorted(pontuacao.items(), key=lambda x: x[1], reverse=True)
-    return sorted([d for d, _ in dezenas_ordenadas[:24]])
-
 def calcular_score_decaimento_vetorizado(df_janela, grupos):
+    """Calcula o desempenho recente dos 24 grupos com decaimento ponderado."""
     n = len(df_janela)
     pesos = np.linspace(1.0, 2.0, n)
     scores = {}
@@ -124,6 +107,7 @@ def calcular_atrasos_historico(df_historico, pool_dezenas):
     return atrasos
 
 def purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_atrasadas=4):
+    """Purifica o pool bruto selecionando as dezenas mais quentes e rotacionando as atrasadas."""
     df_j15 = df_historico.iloc[-15:]
     df_j50 = df_historico.iloc[-50:]
     
@@ -212,7 +196,6 @@ def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas
     max_quadrante = np.max(quadrantes_matriz, axis=1)
     mask_quadrantes = (zeros_count <= 1) & (max_quadrante <= 3)
 
-    # Validação da Regra de Dezenas Fixas
     if dezenas_fixas:
         mask_fixas = np.all(np.isin(dezenas_fixas, matriz_apostas), axis=1)
     else:
@@ -227,11 +210,22 @@ st.title("🎲 Gerador Inteligente Mega-Sena")
 
 st.sidebar.header("Configurações do Gerador")
 
-# Entrada do histórico
+# 1. Upload do Histórico
 arquivo_excel = st.sidebar.file_uploader("Upload da planilha (.xlsx)", type=["xlsx"])
+
+if arquivo_excel is not None:
+    df_historico_temp = carregar_dados_excel(arquivo_excel)
+    ultimo_linha = df_historico_temp.iloc[-1]
+    
+    num_concurso = ultimo_linha.get('Concurso', ultimo_linha.get('concurso', 'N/A'))
+    data_concurso = ultimo_linha.get('Data', ultimo_linha.get('data', 'N/A'))
+    dezenas_ultimas = " - ".join(f"{d:02d}" for d in ultimo_linha['dezenas'])
+    
+    st.info(f"📊 **Último Concurso Registrado na Planilha:** Concurso **nº {num_concurso}** ({data_concurso})\n\n**Dezenas Sorteadas:** `{dezenas_ultimas}`")
+
 qtd_jogos = st.sidebar.number_input("Quantidade de jogos a gerar:", min_value=1, max_value=500, value=30)
 
-# Painel de Seleção de Dezenas Fixas
+# 2. Dezenas Fixas
 st.sidebar.markdown("---")
 usar_dezenas_fixas = st.sidebar.checkbox("Activar Dezenas Fixas", value=False)
 dezenas_fixas_selecionadas = []
@@ -245,8 +239,8 @@ if usar_dezenas_fixas:
 
 st.sidebar.markdown("---")
 
-# Seleção do Modo
-usar_modo_manual = st.sidebar.checkbox("Usar Modo Manual (40 Dezenas Preferidas)", value=True)
+# 3. Modo de Escolha do Pool (Manual x 3 Melhores Grupos)
+usar_modo_manual = st.sidebar.checkbox("Usar Modo Manual (40 Dezenas Preferidas)", value=False)
 
 dezenas_manuais = []
 if usar_modo_manual:
@@ -260,6 +254,7 @@ if usar_modo_manual:
         default=default_40
     )
 
+# Execução do Algoritmo
 if st.sidebar.button("Gerar Apostas", type="primary"):
     if arquivo_excel is None:
         st.error("Por favor, faça o upload do arquivo Excel com o histórico dos sorteios.")
@@ -268,28 +263,34 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
     elif usar_dezenas_fixas and len(dezenas_fixas_selecionadas) == 0:
         st.error("A opção de dezenas fixas está ativa. Selecione 1 ou 2 dezenas para continuar.")
     else:
-        with st.spinner("Processando histórico e purificando estatisticamente as dezenas..."):
+        with st.spinner("Processando histórico, ranqueando grupos e purificando dezenas..."):
             df_historico = carregar_dados_excel(arquivo_excel)
             ultimo_concurso = df_historico.iloc[-1]['dezenas']
             
+            # Escolha da fonte das 40 dezenas (Manual ou Automática pelos 3 melhores grupos)
             if usar_modo_manual:
-                pool_bruto = reduzir_40_para_24_dezenas(dezenas_manuais, df_historico)
+                pool_bruto = list(set(dezenas_manuais))
+                st.toast("Modo Manual: Utilizando as 40 dezenas selecionadas.")
             else:
                 grupos = obter_24_grupos_fixos()
                 janela_50 = df_historico.iloc[-50:]
                 ranking_grupos = calcular_score_decaimento_vetorizado(janela_50, grupos)
-                top_5_grupos = ranking_grupos.head(5).index.tolist()
-                pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
+                
+                # Seleção exata dos 3 melhores grupos entre os 24 cadastrados
+                top_3_grupos = ranking_grupos.head(3).index.tolist()
+                pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_3_grupos])))
+                st.toast(f"Modo Automático: Unindo dezenas dos 3 melhores grupos ({', '.join(top_3_grupos)})")
 
-            # Garante que as dezenas fixas estejam no pool de geração
+            # Garantia de inserção das dezenas fixas no pool inicial
             if usar_dezenas_fixas and dezenas_fixas_selecionadas:
                 for dfix in dezenas_fixas_selecionadas:
                     if dfix not in pool_bruto:
                         pool_bruto.append(dfix)
 
+            # Purificação do Pool para 24 dezenas com Rotação de Atrasadas
             pool_purificado = purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_atrasadas=4)
             
-            # Garante que as dezenas fixas fiquem no pool purificado final
+            # Garantia de presença das dezenas fixas no pool purificado final
             if usar_dezenas_fixas and dezenas_fixas_selecionadas:
                 for dfix in dezenas_fixas_selecionadas:
                     if dfix not in pool_purificado:
@@ -298,6 +299,7 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
 
             faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
             
+            # Montagem e Filtragem de todas as combinações
             todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
             
             fixas_validacao = dezenas_fixas_selecionadas if usar_dezenas_fixas else None
@@ -305,22 +307,22 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
             apostas_filtradas = todas_combinacoes[mask_validos]
             
             if len(apostas_filtradas) < qtd_jogos:
-                st.warning(f"Apenas {len(apostas_filtradas)} combinações atenderam a todos os critérios e filtros estritos.")
+                st.warning(f"Apenas {len(apostas_filtradas)} combinações atenderam a todos os critérios e filtros estatísticos.")
                 apostas_finais = apostas_filtradas.tolist()
             else:
                 np.random.shuffle(apostas_filtradas)
                 apostas_finais = apostas_filtradas[:qtd_jogos].tolist()
 
-            # Resultados na tela
+            # Exibição de Resultados
             st.success(f"Geração concluída! {len(apostas_finais)} jogos validados.")
             
             if usar_dezenas_fixas and dezenas_fixas_selecionadas:
-                st.info(f"📌 Dezenas fixas aplicadas a todas as combinações: **{', '.join(f'{d:02d}' for d in dezenas_fixas_selecionadas)}**")
+                st.info(f"📌 Dezenas fixas presentes em 100% dos jogos: **{', '.join(f'{d:02d}' for d in dezenas_fixas_selecionadas)}**")
 
-            st.subheader("Pool de Dezenas Purificadas")
+            st.subheader("Pool Purificado de 24 Dezenas")
             st.code(" - ".join(f"{num:02d}" for num in pool_purificado))
 
-            st.subheader("Jogos Gerados")
+            st.subheader("Jogos Validados")
             df_jogos = pd.DataFrame(
                 [[f"{num:02d}" for num in sorted(jogo)] for jogo in apostas_finais],
                 columns=[f"Dezena {i}" for i in range(1, 7)]
@@ -328,16 +330,17 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
             df_jogos.index = [f"Jogo {i:02d}" for i in range(1, len(df_jogos) + 1)]
             st.dataframe(df_jogos, use_container_width=True)
 
-            # Geração do arquivo TXT para download
+            # Preparação do arquivo .TXT para download
             conteudo_txt = "==================================================\n"
             conteudo_txt += "          MEGA-SENA - JOGOS GERADOS              \n"
             conteudo_txt += "==================================================\n\n"
-            conteudo_txt += f"POOL SELECIONADO COM ROTAÇÃO ({len(pool_purificado)} DEZENAS):\n{pool_purificado}\n\n"
+            conteudo_txt += f"ÚLTIMO CONCURSO REGISTRADO: {num_concurso} ({data_concurso})\n"
+            conteudo_txt += f"POOL FINAL PURIFICADO ({len(pool_purificado)} DEZENAS):\n{pool_purificado}\n\n"
             if usar_dezenas_fixas and dezenas_fixas_selecionadas:
                 conteudo_txt += f"DEZENAS FIXAS: {dezenas_fixas_selecionadas}\n"
             conteudo_txt += f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n"
             conteudo_txt += "==================================================\n"
-            conteudo_txt += f"APOSTAS SIMPLES VALIDADAS ({len(apostas_finais)} JOGOS):\n"
+            conteudo_txt += f"APOSTAS VALIDADAS ({len(apostas_finais)} JOGOS):\n"
             conteudo_txt += "==================================================\n\n"
             
             for idx, aposta in enumerate(apostas_finais, 1):
