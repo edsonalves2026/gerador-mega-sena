@@ -1,11 +1,49 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
+import itertools
 from itertools import combinations
 import random
+from datetime import datetime
 
-def carregar_dados_excel(caminho_planilha):
+# ==============================================================================
+# CONFIGURAÇÃO DA PÁGINA E AUTENTICAÇÃO
+# ==============================================================================
+st.set_page_config(page_title="Gerador Mega-Sena", page_icon="🎲", layout="wide")
+
+def verificar_senha():
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
+
+    if st.session_state.autenticado:
+        return True
+
+    st.title("🔒 Acesso Restrito")
+    st.subheader("Digite a senha para acessar o gerador da Mega-Sena")
+    
+    senha_digitada = st.text_input("Senha:", type="password")
+    
+    if st.button("Entrar"):
+        senha_correta = st.secrets.get("APP_PASSWORD", "123456")
+        if senha_digitada == senha_correta:
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta!")
+            
+    return False
+
+if not verificar_senha():
+    st.stop()
+
+# ==============================================================================
+# CRIAÇÃO E PROCESSAMENTO DE DADOS (PIPELINE DE CÁLCULO)
+# ==============================================================================
+
+@st.cache_data
+def carregar_dados_excel(file_uploader_or_path):
     """Lê a planilha dinamicamente e extrai as 6 dezenas do histórico."""
-    df = pd.read_excel(caminho_planilha)
+    df = pd.read_excel(file_uploader_or_path)
     colunas_dezenas = ['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 'Bola6']
     df['dezenas'] = df[colunas_dezenas].values.tolist()
     return df
@@ -38,6 +76,24 @@ def obter_24_grupos_fixos():
         "Grupo_23": [1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 13, 14, 17, 18, 21, 23, 24, 25, 27, 28, 29, 32, 34, 36, 37, 41, 43, 45, 47, 49, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60],
         "Grupo_24": [4, 5, 6, 7, 10, 11, 12, 15, 16, 17, 18, 19, 20, 22, 24, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38, 40, 42, 45, 46, 47, 48, 50, 51, 52, 53, 55, 56, 60]
     }
+
+def reduzir_40_para_24_dezenas(dezenas_40, df_historico):
+    ultimos_50 = df_historico[['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 'Bola6']].tail(50).values.flatten()
+    todos_jogos = df_historico['dezenas'].tolist()
+    
+    pontuacao = {}
+    for d in dezenas_40:
+        freq_recente = np.sum(ultimos_50 == d)
+        atraso = 0
+        for jogo in reversed(todos_jogos):
+            if d in jogo:
+                break
+            atraso += 1
+        score = (freq_recente * 0.7) + (min(atraso, 15) * 0.3)
+        pontuacao[d] = score
+
+    dezenas_ordenadas = sorted(pontuacao.items(), key=lambda x: x[1], reverse=True)
+    return sorted([d for d, _ in dezenas_ordenadas[:24]])
 
 def calcular_score_decaimento_vetorizado(df_janela, grupos):
     n = len(df_janela)
@@ -98,7 +154,6 @@ def purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_a
     
     atrasos_dict = calcular_atrasos_historico(df_historico, restantes)
     
-    # ---- ROTAÇÃO INTELIGENTE DAS ATRASADAS ----
     candidatas_atrasadas = sorted(restantes, key=lambda d: atrasos_dict[d], reverse=True)
     pool_candidatas_atrasadas = candidatas_atrasadas[:vagas_atrasadas * 2]
     
@@ -115,17 +170,12 @@ def purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_a
         ).tolist())
     else:
         top_atrasadas = sorted(candidatas_atrasadas[:vagas_atrasadas])
-    # -------------------------------------------
     
-    universo_final = sorted(top_quentes + top_atrasadas)
-    return universo_final
+    return sorted(top_quentes + top_atrasadas)
 
 def obter_faixa_repetidas_dinamica(df_historico):
     ultimos_5 = df_historico.iloc[-5:]
-    repeticoes = []
-    for i in range(1, len(ultimos_5)):
-        rep = len(set(ultimos_5.iloc[i]['dezenas']).intersection(set(ultimos_5.iloc[i-1]['dezenas'])))
-        repeticoes.append(rep)
+    repeticoes = [len(set(ultimos_5.iloc[i]['dezenas']).intersection(set(ultimos_5.iloc[i-1]['dezenas']))) for i in range(1, len(ultimos_5))]
     
     media = np.mean(repeticoes) if repeticoes else 1.0
     if media <= 1.2:
@@ -164,81 +214,98 @@ def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas
     
     return mask_soma & mask_paridade & mask_moldura & mask_repetidos & mask_consecutivos & mask_quadrantes
 
-def exportar_apostas_txt(apostas, pool, faixa_repetidas, caminho_txt="jogos_gerados.txt"):
-    with open(caminho_txt, "w", encoding="utf-8") as file:
-        file.write("==================================================\n")
-        file.write("           MEGA-SENA - JOGOS GERADOS              \n")
-        file.write("==================================================\n\n")
-        
-        file.write(f"POOL SELECIONADO COM ROTAÇÃO (24 DEZENAS):\n")
-        file.write(f"{sorted(pool)}\n\n")
-        
-        file.write(f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n")
-        file.write("==================================================\n")
-        file.write(f"APOSTAS SIMPLES VALIDADAS ({len(apostas)} JOGOS):\n")
-        file.write("==================================================\n\n")
-        
-        for idx, aposta in enumerate(apostas, 1):
-            aposta_fmt = " - ".join(f"{num:02d}" for num in sorted(aposta))
-            file.write(f"Jogo {idx:02d}: {aposta_fmt}\n")
-            
-        file.write("\n==================================================\n")
-        file.write("Filtros Aplicados: Soma (140-220), Paridade (2-4P),\n")
-        file.write("Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par)\n")
-        file.write("e Quadrantes (máx 1 zerado, máx 3 por qdt).\n")
-        file.write("==================================================\n")
+# ==============================================================================
+# INTERFACE PRINCIPAL STREAMLIT
+# ==============================================================================
+st.title("🎲 Gerador Inteligente Mega-Sena")
 
-def executar_gerador_mega_sena(caminho_planilha, limite_apostas_geradas=30, caminho_txt="jogos_gerados.txt", dezenas_manuais=None):
-    df_historico = carregar_dados_excel(caminho_planilha)
-    grupos = obter_24_grupos_fixos()
-    ultimo_concurso = df_historico.iloc[-1]['dezenas']
-    
-    if dezenas_manuais and len(dezenas_manuais) > 0:
-        print(f"-> Usando pool de dezenas fornecido manualmente ({len(dezenas_manuais)} dezenas).")
-        pool_bruto = sorted(list(set(dezenas_manuais)))
-    else:
-        print("-> Nenhuma dezena manual fornecida. Executando seleção automática via Top 5 Grupos...")
-        janela_50 = df_historico.iloc[-50:]
-        ranking_grupos = calcular_score_decaimento_vetorizado(janela_50, grupos)
-        top_5_grupos = ranking_grupos.head(5).index.tolist()
-        pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
-    
-    pool_purificado = purificar_pool_multi_camada(
-        pool_bruto=pool_bruto,
-        df_historico=df_historico,
-        total_alvo=24,
-        vagas_atrasadas=4
+st.sidebar.header("Configurações do Gerador")
+
+# Entrada do histórico
+arquivo_excel = st.sidebar.file_uploader("Upload da planilha (.xlsx)", type=["xlsx"])
+qtd_jogos = st.sidebar.number_input("Quantidade de jogos a gerar:", min_value=1, max_value=500, value=30)
+
+# Seleção do Modo
+usar_modo_manual = st.sidebar.checkbox("Usar Modo Manual (40 Dezenas Preferidas)", value=True)
+
+dezenas_manuais = []
+if usar_modo_manual:
+    default_40 = [
+        1, 2, 3, 4, 5, 7, 8, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 22, 23, 25,
+        27, 28, 30, 31, 33, 34, 35, 37, 38, 40, 41, 42, 44, 45, 47, 49, 50, 52, 55, 58
+    ]
+    dezenas_manuais = st.sidebar.multiselect(
+        "Escolha exatamente 40 dezenas:",
+        options=list(range(1, 61)),
+        default=default_40
     )
-    
-    faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
-    
-    todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
-    mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas)
-    apostas_filtradas = todas_combinacoes[mask_validos]
-    
-    # Embaralha os jogos válidos antes de fatiar para garantir diversidade nas execuções
-    np.random.shuffle(apostas_filtradas)
-    
-    apostas_finais = apostas_filtradas[:limite_apostas_geradas].tolist()
-    
-    exportar_apostas_txt(apostas_finais, pool_purificado, faixa_repetidas, caminho_txt)
-    
-    return apostas_finais, pool_purificado, faixa_repetidas
 
-if __name__ == "__main__":
-    CAMINHO_PLANILHA = "mega_sena.xlsx" 
-    MEU_POOL_MANUAL = []
-    
-    try:
-        # Aumentado para 30 apostas geradas (você pode alterar para 40, 50, etc.)
-        QTD_JOGOS = 30 
-        
-        jogos, pool, faixa = executar_gerador_mega_sena(
-            caminho_planilha=CAMINHO_PLANILHA, 
-            limite_apostas_geradas=QTD_JOGOS, 
-            caminho_txt="jogos_gerados.txt",
-            dezenas_manuais=MEU_POOL_MANUAL
-        )
-        print(f"Sucesso! {len(jogos)} apostas geradas e salvas em 'jogos_gerados.txt'.")
-    except FileNotFoundError:
-        print(f"Certifique-se de que o arquivo '{CAMINHO_PLANILHA}' está no mesmo diretório do script.")
+if st.sidebar.button("Gerar Apostas", type="primary"):
+    if arquivo_excel is None:
+        st.error("Por favor, faça o upload do arquivo Excel com o histórico dos sorteios.")
+    elif usar_modo_manual and len(set(dezenas_manuais)) != 40:
+        st.error(f"O modo manual requer exatamente 40 dezenas únicas. Foram selecionadas {len(set(dezenas_manuais))}.")
+    else:
+        with st.spinner("Processando histórico e purificando estatisticamente as dezenas..."):
+            df_historico = carregar_dados_excel(arquivo_excel)
+            ultimo_concurso = df_historico.iloc[-1]['dezenas']
+            
+            if usar_modo_manual:
+                pool_bruto = reduzir_40_para_24_dezenas(dezenas_manuais, df_historico)
+            else:
+                grupos = obter_24_grupos_fixos()
+                janela_50 = df_historico.iloc[-50:]
+                ranking_grupos = calcular_score_decaimento_vetorizado(janela_50, grupos)
+                top_5_grupos = ranking_grupos.head(5).index.tolist()
+                pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
+
+            pool_purificado = purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_atrasadas=4)
+            faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
+            
+            todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
+            mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas)
+            apostas_filtradas = todas_combinacoes[mask_validos]
+            
+            np.random.shuffle(apostas_filtradas)
+            apostas_finais = apostas_filtradas[:qtd_jogos].tolist()
+
+            # Resultados na tela
+            st.success(f"Geração concluída! {len(apostas_finais)} jogos validados.")
+            
+            st.subheader("Pool de 24 Dezenas Purificadas")
+            st.code(" - ".join(f"{num:02d}" for num in pool_purificado))
+
+            st.subheader("Jogos Gerados")
+            df_jogos = pd.DataFrame(
+                [[f"{num:02d}" for num in sorted(jogo)] for jogo in apostas_finais],
+                columns=[f"Dezena {i}" for i in range(1, 7)]
+            )
+            df_jogos.index = [f"Jogo {i:02d}" for i in range(1, len(df_jogos) + 1)]
+            st.dataframe(df_jogos, use_container_width=True)
+
+            # Geração do arquivo TXT para download
+            conteudo_txt = "==================================================\n"
+            conteudo_txt += "          MEGA-SENA - JOGOS GERADOS              \n"
+            conteudo_txt += "==================================================\n\n"
+            conteudo_txt += f"POOL SELECIONADO COM ROTAÇÃO (24 DEZENAS):\n{pool_purificado}\n\n"
+            conteudo_txt += f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n"
+            conteudo_txt += "==================================================\n"
+            conteudo_txt += f"APOSTAS SIMPLES VALIDADAS ({len(apostas_finais)} JOGOS):\n"
+            conteudo_txt += "==================================================\n\n"
+            
+            for idx, aposta in enumerate(apostas_finais, 1):
+                aposta_fmt = " - ".join(f"{num:02d}" for num in sorted(aposta))
+                conteudo_txt += f"Jogo {idx:02d}: {aposta_fmt}\n"
+                
+            conteudo_txt += "\n==================================================\n"
+            conteudo_txt += "Filtros Aplicados: Soma (140-220), Paridade (2-4P),\n"
+            conteudo_txt += "Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par)\n"
+            conteudo_txt += "e Quadrantes (máx 1 zerado, máx 3 por qdt).\n"
+            conteudo_txt += "==================================================\n"
+
+            st.download_button(
+                label="📥 Baixar Jogos (.TXT)",
+                data=conteudo_txt,
+                file_name="jogos_gerados.txt",
+                mime="text/plain"
+            )
