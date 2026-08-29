@@ -185,7 +185,7 @@ def obter_faixa_repetidas_dinamica(df_historico):
     else:
         return [1, 2, 3]
 
-def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas):
+def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas, dezenas_fixas=None):
     somas = np.sum(matriz_apostas, axis=1)
     mask_soma = (somas >= 140) & (somas <= 220)
     
@@ -211,8 +211,14 @@ def validar_apostas_vetorizadas(matriz_apostas, ultimo_concurso, faixa_repetidas
     zeros_count = np.sum(quadrantes_matriz == 0, axis=1)
     max_quadrante = np.max(quadrantes_matriz, axis=1)
     mask_quadrantes = (zeros_count <= 1) & (max_quadrante <= 3)
+
+    # Validação da Regra de Dezenas Fixas
+    if dezenas_fixas:
+        mask_fixas = np.all(np.isin(dezenas_fixas, matriz_apostas), axis=1)
+    else:
+        mask_fixas = np.ones(len(matriz_apostas), dtype=bool)
     
-    return mask_soma & mask_paridade & mask_moldura & mask_repetidos & mask_consecutivos & mask_quadrantes
+    return mask_soma & mask_paridade & mask_moldura & mask_repetidos & mask_consecutivos & mask_quadrantes & mask_fixas
 
 # ==============================================================================
 # INTERFACE PRINCIPAL STREAMLIT
@@ -224,6 +230,20 @@ st.sidebar.header("Configurações do Gerador")
 # Entrada do histórico
 arquivo_excel = st.sidebar.file_uploader("Upload da planilha (.xlsx)", type=["xlsx"])
 qtd_jogos = st.sidebar.number_input("Quantidade de jogos a gerar:", min_value=1, max_value=500, value=30)
+
+# Painel de Seleção de Dezenas Fixas
+st.sidebar.markdown("---")
+usar_dezenas_fixas = st.sidebar.checkbox("Activar Dezenas Fixas", value=False)
+dezenas_fixas_selecionadas = []
+
+if usar_dezenas_fixas:
+    dezenas_fixas_selecionadas = st.sidebar.multiselect(
+        "Escolha 1 ou 2 dezenas fixas (1 a 60):",
+        options=list(range(1, 61)),
+        max_selections=2
+    )
+
+st.sidebar.markdown("---")
 
 # Seleção do Modo
 usar_modo_manual = st.sidebar.checkbox("Usar Modo Manual (40 Dezenas Preferidas)", value=True)
@@ -245,6 +265,8 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
         st.error("Por favor, faça o upload do arquivo Excel com o histórico dos sorteios.")
     elif usar_modo_manual and len(set(dezenas_manuais)) != 40:
         st.error(f"O modo manual requer exatamente 40 dezenas únicas. Foram selecionadas {len(set(dezenas_manuais))}.")
+    elif usar_dezenas_fixas and len(dezenas_fixas_selecionadas) == 0:
+        st.error("A opção de dezenas fixas está ativa. Selecione 1 ou 2 dezenas para continuar.")
     else:
         with st.spinner("Processando histórico e purificando estatisticamente as dezenas..."):
             df_historico = carregar_dados_excel(arquivo_excel)
@@ -259,20 +281,43 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
                 top_5_grupos = ranking_grupos.head(5).index.tolist()
                 pool_bruto = sorted(list(set().union(*[grupos[g] for g in top_5_grupos])))
 
+            # Garante que as dezenas fixas estejam no pool de geração
+            if usar_dezenas_fixas and dezenas_fixas_selecionadas:
+                for dfix in dezenas_fixas_selecionadas:
+                    if dfix not in pool_bruto:
+                        pool_bruto.append(dfix)
+
             pool_purificado = purificar_pool_multi_camada(pool_bruto, df_historico, total_alvo=24, vagas_atrasadas=4)
+            
+            # Garante que as dezenas fixas fiquem no pool purificado final
+            if usar_dezenas_fixas and dezenas_fixas_selecionadas:
+                for dfix in dezenas_fixas_selecionadas:
+                    if dfix not in pool_purificado:
+                        pool_purificado[-1] = dfix
+                pool_purificado = sorted(list(set(pool_purificado)))
+
             faixa_repetidas = obter_faixa_repetidas_dinamica(df_historico)
             
             todas_combinacoes = np.array(list(combinations(pool_purificado, 6)))
-            mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas)
+            
+            fixas_validacao = dezenas_fixas_selecionadas if usar_dezenas_fixas else None
+            mask_validos = validar_apostas_vetorizadas(todas_combinacoes, ultimo_concurso, faixa_repetidas, dezenas_fixas=fixas_validacao)
             apostas_filtradas = todas_combinacoes[mask_validos]
             
-            np.random.shuffle(apostas_filtradas)
-            apostas_finais = apostas_filtradas[:qtd_jogos].tolist()
+            if len(apostas_filtradas) < qtd_jogos:
+                st.warning(f"Apenas {len(apostas_filtradas)} combinações atenderam a todos os critérios e filtros estritos.")
+                apostas_finais = apostas_filtradas.tolist()
+            else:
+                np.random.shuffle(apostas_filtradas)
+                apostas_finais = apostas_filtradas[:qtd_jogos].tolist()
 
             # Resultados na tela
             st.success(f"Geração concluída! {len(apostas_finais)} jogos validados.")
             
-            st.subheader("Pool de 24 Dezenas Purificadas")
+            if usar_dezenas_fixas and dezenas_fixas_selecionadas:
+                st.info(f"📌 Dezenas fixas aplicadas a todas as combinações: **{', '.join(f'{d:02d}' for d in dezenas_fixas_selecionadas)}**")
+
+            st.subheader("Pool de Dezenas Purificadas")
             st.code(" - ".join(f"{num:02d}" for num in pool_purificado))
 
             st.subheader("Jogos Gerados")
@@ -287,7 +332,9 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
             conteudo_txt = "==================================================\n"
             conteudo_txt += "          MEGA-SENA - JOGOS GERADOS              \n"
             conteudo_txt += "==================================================\n\n"
-            conteudo_txt += f"POOL SELECIONADO COM ROTAÇÃO (24 DEZENAS):\n{pool_purificado}\n\n"
+            conteudo_txt += f"POOL SELECIONADO COM ROTAÇÃO ({len(pool_purificado)} DEZENAS):\n{pool_purificado}\n\n"
+            if usar_dezenas_fixas and dezenas_fixas_selecionadas:
+                conteudo_txt += f"DEZENAS FIXAS: {dezenas_fixas_selecionadas}\n"
             conteudo_txt += f"FAIXA DE REPETIDAS ACEITA: {faixa_repetidas}\n"
             conteudo_txt += "==================================================\n"
             conteudo_txt += f"APOSTAS SIMPLES VALIDADAS ({len(apostas_finais)} JOGOS):\n"
@@ -299,8 +346,8 @@ if st.sidebar.button("Gerar Apostas", type="primary"):
                 
             conteudo_txt += "\n==================================================\n"
             conteudo_txt += "Filtros Aplicados: Soma (140-220), Paridade (2-4P),\n"
-            conteudo_txt += "Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par)\n"
-            conteudo_txt += "e Quadrantes (máx 1 zerado, máx 3 por qdt).\n"
+            conteudo_txt += "Moldura (2-5), Repetição Dinâmica, Consecutivos (<=1 par),\n"
+            conteudo_txt += "Quadrantes (máx 1 zerado, máx 3 por qdt) e Fixas Obrigatórias.\n"
             conteudo_txt += "==================================================\n"
 
             st.download_button(
