@@ -291,7 +291,7 @@ if st.button("🚀 Processar Purificação (24 Dezenas) e Gerar Jogos", type="pr
             
             # Exportação Excel
             buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_jogos.to_excel(writer, sheet_name='Jogos_MegaSena', index=False)
             
             st.download_button(
