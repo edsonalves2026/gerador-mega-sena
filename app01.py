@@ -154,6 +154,7 @@ st.title("🎲 Mega-Sena Analytics Pro — Gerador de Apostas Preditivas")
 st.markdown("---")
 
 # UPLOAD DE PLANILHA HISTÓRICA
+# UPLOAD DE PLANILHA HISTÓRICA
 st.sidebar.header("📁 Base Histórica")
 uploaded_file = st.sidebar.file_uploader("Upload da Planilha de Sorteios (CSV ou Excel)", type=["csv", "xlsx"])
 
@@ -168,15 +169,31 @@ if uploaded_file is not None:
         else:
             df_historico = pd.read_excel(uploaded_file)
             
-        st.sidebar.success("Base de dados carregada!")
+        # Filtra apenas colunas de dezenas/bolas ignorando datas e textos
+        cols_dezenas = []
+        for col in df_historico.columns:
+            nome_col = str(col).lower()
+            if any(term in nome_col for term in ['bola', "dezena", 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']):
+                if 'data' not in nome_col:
+                    cols_dezenas.append(col)
         
-        cols_dezenas = [c for c in df_historico.columns if 'bola' in c.lower() or 'dezena' in c.lower() or 'd' in c.lower()][:6]
+        # Pega as 6 primeiras colunas de dezenas encontradas
+        cols_dezenas = cols_dezenas[:6]
+
         if len(cols_dezenas) == 6:
-            ultimo_sorteio = df_historico.iloc[-1][cols_dezenas].astype(int).tolist()
+            # Converte com segurança tratando valores nulos ou incompatíveis
+            linha_sorteio = df_historico.iloc[-1][cols_dezenas]
+            ultimo_sorteio = [int(pd.to_numeric(v, errors='coerce')) for v in linha_sorteio]
+            
             if 'concurso' in df_historico.columns.str.lower():
-                col_conc = [c for c in df_historico.columns if 'concurso' in c.lower()][0]
+                col_conc = [c for c in df_historico.columns if 'concurso' in str(c).lower()][0]
                 ultimo_concurso_num = df_historico.iloc[-1][col_conc]
+                
+            st.sidebar.success("Base de dados carregada!")
             st.sidebar.info(f"Último Concurso #{ultimo_concurso_num}: {ultimo_sorteio}")
+        else:
+            st.sidebar.warning("Não foram encontradas 6 colunas válidas de dezenas (ex: Bola1...Bola6).")
+            
     except Exception as e:
         st.sidebar.error(f"Erro ao ler arquivo: {e}")
 
