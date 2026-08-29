@@ -37,7 +37,6 @@ def verificar_autenticacao():
         
         if st.button("Entrar", type="primary", use_container_width=True):
             senhas_validas = st.secrets.get("passwords", {})
-            
             if usuario_input in senhas_validas and str(senhas_validas[usuario_input]) == senha_input:
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
@@ -81,14 +80,14 @@ GRUPOS_40 = {
     "Grupo 18": [1, 2, 5, 6, 7, 8, 9, 12, 14, 15, 17, 18, 19, 21, 23, 25, 26, 28, 29, 31, 32, 34, 36, 38, 39, 40, 41, 42, 43, 44, 47, 48, 50, 51, 53, 54, 56, 57, 59, 60],
     "Grupo 19": [3, 4, 5, 7, 8, 10, 11, 13, 14, 15, 16, 17, 18, 20, 22, 23, 24, 26, 27, 28, 29, 30, 33, 34, 35, 37, 38, 41, 42, 43, 45, 46, 47, 49, 50, 52, 53, 55, 56, 58],
     "Grupo 20": [1, 2, 3, 6, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22, 24, 25, 27, 28, 30, 31, 32, 33, 36, 37, 39, 40, 41, 44, 45, 46, 48, 49, 51, 52, 54, 57, 58, 59, 60, 17],
-    "Grupo 21": [2, 3, 4, 5, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 27, 29, 31, 32, 34, 35, 36, 38, 40, 42, 43, 44, 47, 48, 50, 51, 53, 54, 55, 56, 57, 59, 60],
+    "Grupo 21": [2, 3, 4, 5, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 27, 29, 31, 32, 34, 35, 36, 38, 40, 42, 43, 44, 47, 48, 50, 51, 53, 55, 56, 57, 59, 60],
     "Grupo 22": [1, 4, 6, 7, 8, 10, 11, 13, 14, 15, 18, 19, 20, 22, 23, 24, 25, 28, 29, 30, 32, 33, 35, 37, 38, 39, 41, 42, 45, 46, 47, 49, 50, 52, 53, 55, 56, 58, 59, 60],
     "Grupo 23": [1, 2, 3, 5, 6, 7, 10, 12, 13, 15, 16, 17, 18, 21, 22, 24, 26, 27, 28, 30, 31, 33, 34, 36, 37, 39, 40, 43, 44, 45, 46, 48, 49, 51, 52, 54, 57, 58, 59, 60],
     "Grupo 24": [2, 3, 4, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 29, 30, 31, 32, 34, 35, 36, 38, 39, 41, 42, 43, 44, 47, 48, 50, 52, 53, 55, 56, 57, 58, 59, 60]
 }
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES ESTRUTURAIS, SCRAPING E ANÁLISE HISTÓRICA
+# FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
 # -----------------------------------------------------------------------------
 def get_quadrante(d):
     row = (d - 1) // 10
@@ -121,10 +120,10 @@ def carregar_dados_online():
             dados = []
             for match in padrao.finditer(texto_completo):
                 conc, data, d1, d2, d3, d4, d5, d6 = match.groups()
-                dados.append([int(conc), int(d1), int(d2), int(d3), int(d4), int(d5), int(d6)])
+                dados.append([int(conc), data, int(d1), int(d2), int(d3), int(d4), int(d5), int(d6)])
             
             if dados:
-                df = pd.DataFrame(dados, columns=['concurso', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
+                df = pd.DataFrame(dados, columns=['concurso', 'data', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
                 return df.sort_values(by='concurso').reset_index(drop=True)
     except Exception:
         return None
@@ -280,55 +279,6 @@ def ranquear_top_trincas_dinamicas(sorteios, top_n=5):
     df_trincas = pd.DataFrame(resultados).sort_values(by=['Score', 'Senas (6)', 'Quinas (5)'], ascending=False)
     return df_trincas.head(top_n)
 
-# FUNÇÃO DE BUSCA E AUDITORIA HISTÓRICA DOS JOGOS GERADOS
-def conferir_premiacoes_historicas(jogos_gerados, df_base):
-    if df_base is None or df_base.empty:
-        st.warning("Base de dados histórica indisponível para verificação.")
-        return
-        
-    cols_dezenas = [c for c in df_base.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
-    col_concurso = 'concurso' if 'concurso' in df_base.columns else df_base.columns[0]
-    
-    detalhes_premios = []
-    total_quadras = 0
-    total_quinas = 0
-    total_senas = 0
-
-    for idx_j, jogo in enumerate(jogos_gerados, 1):
-        set_jogo = set(jogo)
-        for _, row in df_base.iterrows():
-            concurso_num = row[col_concurso]
-            sorteio_num = set(row[cols_dezenas].values)
-            acertos = len(set_jogo.intersection(sorteio_num))
-            
-            if acertos >= 4:
-                tipo = "Quadra (4 pts)" if acertos == 4 else ("Quina (5 pts)" if acertos == 5 else "Sena (6 pts)")
-                if acertos == 4: total_quadras += 1
-                elif acertos == 5: total_quinas += 1
-                elif acertos == 6: total_senas += 1
-                
-                detalhes_premios.append({
-                    "Nº do Jogo Gerado": idx_j,
-                    "Jogo": str(sorted(list(jogo))),
-                    "Concurso Premiado": concurso_num,
-                    "Tipo de Prêmio": tipo,
-                    "Dezenas Sorteadas": str(sorted(list(sorteio_num)))
-                })
-                
-    st.markdown("#### 🔍 Resultado da Auditoria Histórica")
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Quadras (4 pontos)", total_quadras)
-    c2.metric("Quinas (5 pontos)", total_quinas)
-    c3.metric("Senas (6 pontos)", total_senas)
-    
-    if detalhes_premios:
-        df_detalhes = pd.DataFrame(detalhes_premios)
-        df_detalhes.index = range(1, len(df_detalhes) + 1)
-        st.dataframe(df_detalhes, use_container_width=True)
-    else:
-        st.info("Nenhum dos jogos gerados obteve 4, 5 ou 6 acertos em sorteios passados da Mega-Sena.")
-
 # -----------------------------------------------------------------------------
 # INTERFACE PRINCIPAL
 # -----------------------------------------------------------------------------
@@ -350,6 +300,14 @@ elif df_historico is not None and not df_historico.empty:
     st.sidebar.success("🌐 Conectado online (`asloterias`)")
 else:
     st.sidebar.warning("Nenhuma base encontrada.")
+
+# EXIBIÇÃO CORRIGIDA DO ÚLTIMO CONCURSO NA BARRA LATERAL
+if df_historico is not None and not df_historico.empty:
+    ultimo_registro = df_historico.iloc[-1]
+    conc_num = ultimo_registro.get('concurso', 'N/A')
+    data_conc = ultimo_registro.get('data', '')
+    data_str = f" ({data_conc})" if data_conc else ""
+    st.sidebar.info(f"📌 **Último Concurso:** #{conc_num}{data_str}")
 
 sorteios_historico_completos = extrair_sorteios_historicos(df_historico)
 ultimo_sorteio = sorteios_historico_completos[-1] if sorteios_historico_completos else []
@@ -388,7 +346,6 @@ if usar_fixas:
 
 qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
 
-# ABA DE NAVEGAÇÃO
 tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", "📊 Métricas dos 24 Grupos", "🔥 Top Trincas Dinâmicas"])
 
 with tab_gerador:
@@ -474,32 +431,59 @@ with tab_gerador:
                 random.shuffle(aprovados)
                 jogos_exibicao = [sorted(list(j)) for j in aprovados[:qtd_exportar]]
                 
-                # Salvar na sessão do Streamlit
-                st.session_state['jogos_gerados'] = jogos_exibicao
+                df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
+                
+                # CORREÇÃO DO ÍNDICE: Inicia a contagem da tabela em 1 (e não em 0)
+                df_jogos.index = df_jogos.index + 1
+                
+                st.session_state['jogos_gerados_atuais'] = jogos_exibicao
+                st.dataframe(df_jogos, use_container_width=True)
+                
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_jogos.to_excel(writer, sheet_name='Jogos_Filtrados', index_label='Jogo')
+                st.download_button("📥 Baixar Planilha (.xlsx)", data=buffer.getvalue(), file_name="jogos_megasena.xlsx", mime="application/vnd.ms-excel")
 
-        # EXIBIÇÃO DA TABELA E AUDITORIA HISTÓRICA
-        if 'jogos_gerados' in st.session_state and st.session_state['jogos_gerados']:
-            jogos_exibicao = st.session_state['jogos_gerados']
-            df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
-            
-            # CORREÇÃO DA NUMERAÇÃO: Começar o índice em 1 ao invés de 0
-            df_jogos.index = range(1, len(df_jogos) + 1)
-            
-            st.dataframe(df_jogos, use_container_width=True)
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_jogos.to_excel(writer, sheet_name='Jogos_Filtrados', index=True, index_label='Nº Jogo')
-            st.download_button("📥 Baixar Planilha (.xlsx)", data=buffer.getvalue(), file_name="jogos_megasena.xlsx", mime="application/vnd.ms-excel")
-
+        # -----------------------------------------------------------------------------
+        # NOVO MÓDULO: VERIFICAÇÃO DE PREMIAÇÃO HISTÓRICA DOS JOGOS GERADOS
+        # -----------------------------------------------------------------------------
+        if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
             st.markdown("---")
-            # NOVA SEÇÃO: CONFERÊNCIA HISTÓRICA DOS JOGOS
-            st.subheader("🔎 Auditoria Passada da Mega-Sena")
-            st.caption("Verifique se algum dos jogos gerados acima já acertou Quadra, Quina ou Sena em toda a história dos sorteios.")
+            st.subheader("🔍 Conferencia Historica dos Jogos Gerados")
+            st.markdown("Verifique se algum dos jogos gerados acima ja obteve **Quadra (4)**, **Quina (5)** ou **Sena (6)** em toda a historia da Mega-Sena.")
             
-            if st.button("🔎 Conferir Premiações dos Jogos na Base Histórica"):
-                conferir_premiacoes_historicas(jogos_exibicao, df_historico)
-
+            if st.button("🔎 Verificar Premiações no Histórico Completo", type="secondary"):
+                if df_historico is not None and not df_historico.empty:
+                    cols_dezenas = [c for c in df_historico.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
+                    
+                    premiações_encontradas = []
+                    
+                    for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
+                        set_jogo = set(jogo)
+                        for _, row in df_historico.iterrows():
+                            sorteio_num = row.get('concurso', 'N/A')
+                            sorteio_dezenas = set(row[cols_dezenas].astype(int).values)
+                            acertos = len(set_jogo.intersection(sorteio_dezenas))
+                            
+                            if acertos >= 4:
+                                tipo = "SENA (6 pts)" if acertos == 6 else ("QUINA (5 pts)" if acertos == 5 else "QUADRA (4 pts)")
+                                premiações_encontradas.append({
+                                    "Jogo Gerado N°": idx_jogo,
+                                    "Dezenas do Jogo": ", ".join(map(str, jogo)),
+                                    "Tipo de Prêmio": tipo,
+                                    "Concurso": sorteio_num,
+                                    "Dezenas Sorteadas": ", ".join(map(str, sorted(list(sorteio_dezenas))))
+                                })
+                    
+                    if premiações_encontradas:
+                        df_premios = pd.DataFrame(premiações_encontradas)
+                        df_premios.index = df_premios.index + 1
+                        st.success(f"🎉 Foram encontradas **{len(premiações_encontradas)}** ocorrências de premiações históricas para os jogos gerados!")
+                        st.dataframe(df_premios, use_container_width=True)
+                    else:
+                        st.info("ℹ️ Nenhum dos jogos gerados nesta rodada obteve Quadra, Quina ou Sena no histórico do banco de dados consultado.")
+                else:
+                    st.error("É necessário ter a base histórica carregada para realizar esta busca.")
     else:
         st.warning("Selecione pelo menos 24 dezenas para continuar.")
 
