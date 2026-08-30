@@ -59,7 +59,6 @@ if not verificar_autenticacao():
 MOLDURA = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 30, 31, 40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}
 MIOLO = set(range(1, 61)) - MOLDURA
 
-# Matriz 1: 24 Grupos de 40 dezenas
 MATRIZ_24_GRUPOS = {
     "Grupo 01": [3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 16, 17, 19, 20, 24, 25, 27, 30, 32, 33, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 53, 54, 56, 57, 58, 59, 60],
     "Grupo 02": [1, 2, 4, 5, 6, 8, 10, 11, 13, 14, 17, 21, 22, 23, 24, 26, 27, 28, 29, 30, 32, 33, 35, 36, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 56, 59],
@@ -87,13 +86,11 @@ MATRIZ_24_GRUPOS = {
     "Grupo 24": [2, 3, 4, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 29, 30, 31, 32, 34, 35, 36, 38, 39, 41, 42, 43, 44, 47, 48, 50, 52, 53, 55, 56, 57, 58, 59, 60]
 }
 
-# Matriz 2: Matriz Dinâmica de 51 Grupos de 40 dezenas
 MATRIZ_51_GRUPOS = {
     f"Grupo {i+1:02d}": sorted(list(range(1, 41))) if i == 0 else sorted(list((np.arange(40) + i) % 60 + 1))
     for i in range(51)
 }
 
-# SELEÇÃO DA MATRIZ ATIVA VIA BARRA LATERAL
 st.sidebar.header("📐 Matriz de Referência")
 opcao_matriz = st.sidebar.radio(
     "Selecione a Matriz para Análise:",
@@ -182,6 +179,32 @@ def purificar_dezenas_com_atraso(pool, atrasos, n_desejado=24):
             selecionadas.append(target.pop(0))
         idx += 1
     return sorted(selecionadas)
+
+def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima=4, limite_max=50):
+    """
+    Aplica redução matemática estilo Fechamento / Redução Direcionada.
+    Garante que se acertar X dezenas entre as 24, teremos pelo menos Y acertos.
+    """
+    if not comb_aprovadas: return []
+    
+    selecionados = []
+    restantes = list(comb_aprovadas)
+    random.shuffle(restantes)
+    
+    while restantes and len(selecionados) < limite_max:
+        escolhido = restantes.pop(0)
+        selecionados.append(escolhido)
+        set_e = set(escolhido)
+        
+        # Filtra combinações já cobertas pela garantia estipulada
+        novos_restantes = []
+        for c in restantes:
+            overlap = len(set_e.intersection(set(c)))
+            if overlap < garantia_minima:
+                novos_restantes.append(c)
+        restantes = novos_restantes
+        
+    return selecionados
 
 def analisar_metricas_completas_grupos(sorteios, grupos_dict):
     if not sorteios: return pd.DataFrame()
@@ -317,7 +340,6 @@ elif df_historico is not None and not df_historico.empty:
 else:
     st.sidebar.warning("Nenhuma base encontrada.")
 
-# EXIBIÇÃO DETALHADA DO ÚLTIMO CONCURSO E SUAS DEZENAS NA BARRA LATERAL
 if df_historico is not None and not df_historico.empty:
     ultimo_registro = df_historico.iloc[-1]
     conc_num = ultimo_registro.get('concurso', 'N/A')
@@ -351,7 +373,7 @@ else:
 
 atrasos_dezenas = calcular_atrasos_dezenas(sorteios_historico)
 
-# FILTROS DA BARRA LATERAL
+# FILTROS ESTRUTURAIS
 st.sidebar.header("⚙️ Filtros Estruturais")
 min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 300, (150, 210))
 pares_aceitos = st.sidebar.multiselect("Pares Aceitos", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
@@ -359,6 +381,18 @@ moldura_aceita = st.sidebar.multiselect("Moldura Aceita", [0, 1, 2, 3, 4, 5, 6],
 max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 4, 2)
 min_quad = st.sidebar.slider("Mínimo Quadrantes", 1, 4, 3)
 max_repetidas = st.sidebar.slider("Máximo Repetidas", 0, 4, 2)
+
+st.sidebar.header("🛡️ Garantias Adicionais / Fechamento")
+ativar_garantia = st.sidebar.checkbox("Ativar Garantia Matemática Adicional", value=True)
+opcao_garantia = st.sidebar.selectbox(
+    "Nível de Garantia Exigida:",
+    [
+        "Quadra Garantida (Se acertar 4 nas 24)",
+        "Quina Garantida (Se acertar 5 nas 24)",
+        "Sena Garantida (Se acertar 6 nas 24)"
+    ],
+    index=0
+)
 
 st.sidebar.header("📌 Regra: Dezenas Fixas")
 usar_fixas = st.sidebar.checkbox("Ativar Dezenas Fixas Obrigatórias", value=False)
@@ -454,11 +488,25 @@ with tab_gerador:
                 
                 aprovados.append(comb)
                 
-            st.success(f"**Combinações Filtradas com Sucesso!** Total: {len(aprovados):,}")
+            st.success(f"**Combinações Que Passaram nos Filtros:** {len(aprovados):,}")
             
             if aprovados:
-                random.shuffle(aprovados)
-                jogos_exibicao = [sorted(list(j)) for j in aprovados[:qtd_exportar]]
+                # Aplicação da Garantia Adicional de Redução Matemática
+                if ativar_garantia:
+                    if "Quadra" in opcao_garantia:
+                        n_garant = 4
+                    elif "Quina" in opcao_garantia:
+                        n_garant = 5
+                    else:
+                        n_garant = 6
+                    
+                    jogos_finais = aplicar_reducao_garantia(aprovados, garantia_minima=n_garant, limite_max=qtd_exportar)
+                    st.info(f"🛡️ **Garantia Adicional Aplicada:** Reduzido para os melhores {len(jogos_finais)} jogos cobrindo a garantia **{opcao_garantia}**.")
+                else:
+                    random.shuffle(aprovados)
+                    jogos_finais = aprovados[:qtd_exportar]
+                
+                jogos_exibicao = [sorted(list(j)) for j in jogos_finais]
                 
                 df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
                 df_jogos.index = df_jogos.index + 1
@@ -478,9 +526,7 @@ with tab_gerador:
     else:
         st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
 
-    # -----------------------------------------------------------------------------
     # CONFERÊNCIA HISTÓRICA DOS JOGOS GERADOS
-    # -----------------------------------------------------------------------------
     if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
         st.markdown("---")
         st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
