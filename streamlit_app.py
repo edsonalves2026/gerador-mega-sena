@@ -146,7 +146,7 @@ opcao_matriz = st.sidebar.radio(
     ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)")
 )
 
-GRUPOS_51 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
+GRUPOS_40 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
