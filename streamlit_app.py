@@ -54,12 +54,13 @@ if not verificar_autenticacao():
     st.stop()
 
 # -----------------------------------------------------------------------------
-# CONSTANTES E ESTRUTURA DOS 24 GRUPOS DE 40 DEZENAS
+# CONSTANTES E ESTRUTURAS DAS MATRIZES DE GRUPOS DE 40 DEZENAS
 # -----------------------------------------------------------------------------
 MOLDURA = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 30, 31, 40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}
 MIOLO = set(range(1, 61)) - MOLDURA
 
-GRUPOS_40 = {
+# Matriz 1: 24 Grupos de 40 dezenas
+MATRIZ_24_GRUPOS = {
     "Grupo 01": [3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 16, 17, 19, 20, 24, 25, 27, 30, 32, 33, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 53, 54, 56, 57, 58, 59, 60],
     "Grupo 02": [1, 2, 4, 5, 6, 8, 10, 11, 13, 14, 17, 21, 22, 23, 24, 26, 27, 28, 29, 30, 32, 33, 35, 36, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 56, 59],
     "Grupo 03": [1, 2, 4, 5, 6, 8, 10, 11, 12, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 28, 29, 30, 33, 34, 36, 37, 38, 39, 43, 44, 46, 47, 48, 50, 51, 52, 53, 55, 56, 60],
@@ -85,6 +86,21 @@ GRUPOS_40 = {
     "Grupo 23": [1, 2, 3, 5, 6, 7, 10, 12, 13, 15, 16, 17, 18, 21, 22, 24, 26, 27, 28, 30, 31, 33, 34, 36, 37, 39, 40, 43, 44, 45, 46, 48, 49, 51, 52, 54, 57, 58, 59, 60],
     "Grupo 24": [2, 3, 4, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 29, 30, 31, 32, 34, 35, 36, 38, 39, 41, 42, 43, 44, 47, 48, 50, 52, 53, 55, 56, 57, 58, 59, 60]
 }
+
+# Matriz 2: Matriz Dinâmica de 51 Grupos de 40 dezenas
+MATRIZ_51_GRUPOS = {
+    f"Grupo {i+1:02d}": sorted(list(range(1, 41))) if i == 0 else sorted(list((np.arange(40) + i) % 60 + 1))
+    for i in range(51)
+}
+
+# SELEÇÃO DA MATRIZ ATIVA VIA BARRA LATERAL
+st.sidebar.header("📐 Matriz de Referência")
+opcao_matriz = st.sidebar.radio(
+    "Selecione a Matriz para Análise:",
+    ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)")
+)
+
+GRUPOS_40 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
@@ -167,18 +183,18 @@ def purificar_dezenas_com_atraso(pool, atrasos, n_desejado=24):
         idx += 1
     return sorted(selecionadas)
 
-def analisar_metricas_completas_grupos(sorteios):
+def analisar_metricas_completas_grupos(sorteios, grupos_dict):
     if not sorteios: return pd.DataFrame()
     
     total_sorteios = len(sorteios)
-    coberturas_sena = {nome: set() for nome in GRUPOS_40}
-    desempenho = {nome: {'Sena': 0, 'Quina': 0, 'Quadra': 0} for nome in GRUPOS_40}
-    atraso_sena = {nome: total_sorteios for nome in GRUPOS_40}
-    atraso_quina = {nome: total_sorteios for nome in GRUPOS_40}
+    coberturas_sena = {nome: set() for nome in grupos_dict}
+    desempenho = {nome: {'Sena': 0, 'Quina': 0, 'Quadra': 0} for nome in grupos_dict}
+    atraso_sena = {nome: total_sorteios for nome in grupos_dict}
+    atraso_quina = {nome: total_sorteios for nome in grupos_dict}
     
     for idx_concurso, s in enumerate(sorteios):
         set_s = set(s)
-        for nome, dezenas in GRUPOS_40.items():
+        for nome, dezenas in grupos_dict.items():
             set_g = set(dezenas)
             acertos = len(set_s.intersection(set_g))
             if acertos == 6:
@@ -198,13 +214,13 @@ def analisar_metricas_completas_grupos(sorteios):
                 desempenho[nome]['Quadra'] += 1
 
     rows = []
-    for nome, dezenas in GRUPOS_40.items():
+    for nome, dezenas in grupos_dict.items():
         cob_total = len(coberturas_sena[nome])
-        outros_grupos = set().union(*[coberturas_sena[g] for g in GRUPOS_40 if g != nome])
+        outros_grupos = set().union(*[coberturas_sena[g] for g in grupos_dict if g != nome])
         cob_exclusiva = len(coberturas_sena[nome] - outros_grupos)
         
         set_g = set(dezenas)
-        outras_sobr = [len(set_g.intersection(set(GRUPOS_40[o]))) for o in GRUPOS_40 if o != nome]
+        outras_sobr = [len(set_g.intersection(set(grupos_dict[o]))) for o in grupos_dict if o != nome]
         redundancia = np.mean(outras_sobr) if outras_sobr else 0
         
         rows.append({
@@ -221,12 +237,12 @@ def analisar_metricas_completas_grupos(sorteios):
         
     return pd.DataFrame(rows)
 
-def ranquear_grupos_quentes(sorteios):
+def ranquear_grupos_quentes(sorteios, grupos_dict):
     if not sorteios or len(sorteios) < 5:
-        return pd.DataFrame([{'Grupo': k, 'Score': 0, 'Média Acertos': 0, '5+ Acertos': 0} for k in list(GRUPOS_40.keys())[:10]])
+        return pd.DataFrame([{'Grupo': k, 'Score': 0, 'Média Acertos': 0, '5+ Acertos': 0} for k in list(grupos_dict.keys())[:10]])
     
     scores = {}
-    for nome, dezenas in GRUPOS_40.items():
+    for nome, dezenas in grupos_dict.items():
         set_g = set(dezenas)
         pontos = 0
         acertos_list = []
@@ -250,14 +266,14 @@ def ranquear_grupos_quentes(sorteios):
     
     return df_rank
 
-def ranquear_top_trincas_dinamicas(sorteios, top_n=5):
+def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     if not sorteios: return pd.DataFrame()
-    nomes_grupos = list(GRUPOS_40.keys())
+    nomes_grupos = list(grupos_dict.keys())
     comb_trincas = list(combinations(nomes_grupos, 3))
     resultados = []
     
     for g1, g2, g3 in comb_trincas:
-        pool_unificado = set(GRUPOS_40[g1] + GRUPOS_40[g2] + GRUPOS_40[g3])
+        pool_unificado = set(grupos_dict[g1] + grupos_dict[g2] + grupos_dict[g3])
         senas, quinas, quadras = 0, 0, 0
         for s in sorteios:
             ac = len(set(s).intersection(pool_unificado))
@@ -357,7 +373,7 @@ if usar_fixas:
 
 qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
 
-tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", "📊 Métricas dos 24 Grupos", "🔥 Top Trincas Dinâmicas"])
+tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", f"📊 Métricas dos Grupos ({opcao_matriz})", "🔥 Top Trincas Dinâmicas"])
 
 with tab_gerador:
     st.subheader("1. Estratégia de Seleção das 40 Dezenas Base")
@@ -374,7 +390,7 @@ with tab_gerador:
     pool_40 = []
     
     if opcao_estrategia.startswith("Top 3 Grupos"):
-        df_rank = ranquear_grupos_quentes(sorteios_historico)
+        df_rank = ranquear_grupos_quentes(sorteios_historico, GRUPOS_40)
         top_10 = df_rank.head(10)
         
         st.markdown(f"**Top 10 Grupos Individuais nos Últimos {len(sorteios_historico)} Concursos:**")
@@ -385,7 +401,7 @@ with tab_gerador:
         pool_40 = sorted(list(set(GRUPOS_40[top_3_nomes[0]] + GRUPOS_40[top_3_nomes[1]] + GRUPOS_40[top_3_nomes[2]])))
         
     elif opcao_estrategia.startswith("Top Trinca"):
-        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, top_n=5)
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=5)
         if not df_top_trincas.empty:
             st.markdown(f"**Top 5 Melhores Trincas dos Últimos {len(sorteios_historico)} Concursos:**")
             st.dataframe(df_top_trincas[['Trinca', 'Score', 'Senas (6)', 'Quinas (5)', 'Quadras (4)']], use_container_width=True)
@@ -396,10 +412,12 @@ with tab_gerador:
             pool_40 = sorted(list(set(GRUPOS_40[g_list[0]] + GRUPOS_40[g_list[1]] + GRUPOS_40[g_list[2]])))
         else:
             st.warning("Carregue o histórico para calcular a Top Trinca.")
-            pool_40 = GRUPOS_40["Grupo 01"]
+            grupo_padrao = list(GRUPOS_40.keys())[0]
+            pool_40 = GRUPOS_40[grupo_padrao]
             
     else:
-        pool_40 = st.multiselect("Selecione 40 dezenas:", options=list(range(1, 61)), default=GRUPOS_40["Grupo 01"])
+        grupo_padrao = list(GRUPOS_40.keys())[0]
+        pool_40 = st.multiselect("Selecione 40 dezenas:", options=list(range(1, 61)), default=GRUPOS_40[grupo_padrao])
 
     st.markdown("---")
     st.subheader("2. Purificação Multicritério (40 ➔ 24 Dezenas) + Atrasos")
@@ -451,63 +469,27 @@ with tab_gerador:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_jogos.to_excel(writer, sheet_name='Jogos_Filtrados', index_label='Jogo')
-                st.download_button("📥 Baixar Planilha (.xlsx)", data=buffer.getvalue(), file_name="jogos_megasena.xlsx", mime="application/vnd.ms-excel")
-
-        # -----------------------------------------------------------------------------
-        # VERIFICAÇÃO DE PREMIAÇÃO HISTÓRICA
-        # -----------------------------------------------------------------------------
-        if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
-            st.markdown("---")
-            st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
-            st.markdown("Verifique se algum dos jogos gerados acima já obteve **Quadra (4)**, **Quina (5)** ou **Sena (6)** em toda a história da Mega-Sena.")
-            
-            if st.button("🔎 Verificar Premiações no Histórico Completo", type="secondary"):
-                if df_historico is not None and not df_historico.empty:
-                    cols_dezenas = [c for c in df_historico.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
-                    
-                    premiações_encontradas = []
-                    
-                    for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
-                        set_jogo = set(jogo)
-                        for _, row in df_historico.iterrows():
-                            sorteio_num = row.get('concurso', 'N/A')
-                            sorteio_dezenas = set(row[cols_dezenas].astype(int).values)
-                            acertos = len(set_jogo.intersection(sorteio_dezenas))
-                            
-                            if acertos >= 4:
-                                tipo = "SENA (6 pts)" if acertos == 6 else ("QUINA (5 pts)" if acertos == 5 else "QUADRA (4 pts)")
-                                premiações_encontradas.append({
-                                    "Jogo Gerado N°": idx_jogo,
-                                    "Dezenas do Jogo": ", ".join(map(str, jogo)),
-                                    "Tipo de Prêmio": tipo,
-                                    "Concurso": sorteio_num,
-                                    "Dezenas Sorteadas": ", ".join(map(str, sorted(list(sorteio_dezenas))))
-                                })
-                    
-                    if premiações_encontradas:
-                        df_premios = pd.DataFrame(premiações_encontradas)
-                        df_premios.index = df_premios.index + 1
-                        st.success(f"🎉 Foram encontradas **{len(premiações_encontradas)}** ocorrências de premiações históricas para os jogos gerados!")
-                        st.dataframe(df_premios, use_container_width=True)
-                    else:
-                        st.info("ℹ️ Nenhum dos jogos gerados nesta rodada obteve Quadra, Quina ou Sena no histórico do banco de dados consultado.")
-                else:
-                    st.error("É necessário ter a base histórica carregada para realizar esta busca.")
+                st.download_button(
+                    "📥 Baixar Planilha (.xlsx)", 
+                    data=buffer.getvalue(), 
+                    file_name="jogos_mega_sena.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
     else:
-        st.warning("Selecione pelo menos 24 dezenas para continuar.")
+        st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
 
 with tab_metricas:
-    st.subheader(f"📊 Painel Histórico dos 24 Grupos (Escopo: {len(sorteios_historico)} Concursos)")
+    st.subheader(f"📊 Desempenho e Cobertura — {opcao_matriz}")
     if sorteios_historico:
-        df_metricas_completas = analisar_metricas_completas_grupos(sorteios_historico)
-        st.dataframe(df_metricas_completas, use_container_width=True)
+        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, GRUPOS_40)
+        st.dataframe(df_metricas, use_container_width=True)
     else:
-        st.warning("Carregue a planilha para calcular as métricas.")
+        st.info("Nenhum dado histórico carregado para exibir métricas.")
 
 with tab_trincas:
-    st.subheader(f"🔥 Ranking Dinâmico das Melhores Trincas (Escopo: {len(sorteios_historico)} Concursos)")
+    st.subheader("🔥 Top Trincas Dinâmicas de Grupos")
     if sorteios_historico:
-        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, top_n=5)
-        st.dataframe(df_top_trincas, use_container_width=True)
+        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=15)
+        st.dataframe(df_trincas_tab, use_container_width=True)
     else:
-        st.warning("Carregue a planilha para gerar o ranking das trincas.")
+        st.info("Nenhum dado histórico carregado para analisar trincas.")
