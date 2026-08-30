@@ -368,29 +368,66 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     return df_trincas.head(top_n)
 
 # -----------------------------------------------------------------------------
-# INTERFACE PRINCIPAL
+# SEÇÃO DA BARRA LATERAL (MODO ONLINE/OFFLINE E MATRIZES)
 # -----------------------------------------------------------------------------
-st.title("🎲 Mega-Sena Analytics Pro — Modelo Gaussiano & Recalibragem Dinâmica")
-st.markdown("---")
-
-df_historico = carregar_dados()
-
 st.sidebar.header("📁 Base Histórica")
-uploaded_file = st.sidebar.file_uploader("Upload manual (opcional)", type=["csv", "xlsx"])
 
-if uploaded_file is not None:
-    try:
-        df_historico = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
-        st.sidebar.success("Base carregada via Upload!")
-    except Exception as e:
-        st.sidebar.error(f"Erro no upload: {e}")
-elif df_historico is not None and not df_historico.empty:
-    st.sidebar.success("🌐 Conectado online (`asloterias`)")
+# Nova opção de escolha entre Online e Offline
+modo_operacao = st.sidebar.radio(
+    "Modo de Operação:",
+    ["🌐 Conectado Online", "📂 Modo Offline (Planilha Excel)"],
+    index=0
+)
+
+df_historico = None
+
+if modo_operacao == "🌐 Conectado Online":
+    # Sua função existente de carregamento online
+    df_historico = carregar_dados()
+    if df_historico is not None and not df_historico.empty:
+        st.sidebar.success("🌐 Conectado online (`asloterias`)")
+    else:
+        st.sidebar.warning("Não foi possível carregar online. Tente o modo offline.")
 else:
-    st.sidebar.warning("Nenhuma base encontrada.")
+    uploaded_file = st.sidebar.file_uploader("Upload manual da planilha", type=["csv", "xlsx"])
+    if uploaded_file is not None:
+        try:
+            df_historico = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+            st.sidebar.success("Base carregada via Upload!")
+        except Exception as e:
+            st.sidebar.error(f"Erro no upload: {e}")
+    else:
+            st.sidebar.info("Carregue uma planilha Excel ou CSV para iniciar no modo offline.")
 
-if df_historico is not None and not df_historico.empty:
-    ultimo_registro = df_historico.iloc[-1]
+# Extração dos sorteios completos
+sorteios_historico_completos_bruto = extrair_sorteios_historicos(df_historico) if df_historico is not None and not df_historico.empty else []
+
+# SELETOR INTERATIVO DE CONCURSO (MODO OFFLINE OU GERAL)
+if df_historico is not None and not df_historico.empty and sorteios_historico_completos_bruto:
+    # Cria uma lista de opções de concursos disponíveis na base
+    lista_concursos_disponiveis = []
+    for idx_c, _ in enumerate(sorteios_historico_completos_bruto):
+        conc_num = df_historico.iloc[idx_c].get('concurso', idx_c + 1)
+        data_conc = df_historico.iloc[idx_c].get('data', '')
+        label_c = f"Concurso #{conc_num}" + (f" ({data_conc})" if data_conc else "")
+        lista_concursos_disponiveis.append((conc_num, idx_c, label_c))
+    
+    # Caixa seletora interativa para o usuário definir o limite do concurso atual
+    labels_opcoes = [item[2] for item in lista_concursos_disponiveis]
+    escolha_concurso_str = st.sidebar.selectbox(
+        "🎯 Definir Concurso de Referência (Corte):",
+        options=labels_opcoes,
+        index=len(labels_opcoes) - 1 # Padrão é sempre o mais recente
+    )
+    
+    # Encontra o índice correspondente à escolha
+    indice_selecionado = next(item[1] for item in lista_concursos_disponiveis if item[2] == escolha_concurso_str)
+    
+    # Corta a lista de histórico exatamente até o concurso selecionado pelo usuário
+    sorteios_historico_completos = sorteios_historico_completos_bruto[:indice_selecionado + 1]
+    
+    # Atualiza o registro visual do último concurso com base na escolha
+    ultimo_registro = df_historico.iloc[indice_selecionado]
     conc_num = ultimo_registro.get('concurso', 'N/A')
     data_conc = ultimo_registro.get('data', '')
     data_str = f" ({data_conc})" if data_conc else ""
@@ -401,13 +438,14 @@ if df_historico is not None and not df_historico.empty:
         dezenas_ultimo = [f"{int(ultimo_registro[c]):02d}" for c in cols_dezenas]
         dezenas_texto = " - ".join(dezenas_ultimo)
         st.sidebar.info(
-            f"📌 **Último Concurso:** #{conc_num}{data_str}\n\n"
+            f"📌 **Concurso Referência:** #{conc_num}{data_str}\n\n"
             f"🎯 **Dezenas:** `{dezenas_texto}`"
         )
     else:
-        st.sidebar.info(f"📌 **Último Concurso:** #{conc_num}{data_str}")
+        st.sidebar.info(f"📌 **Concurso Referência:** #{conc_num}{data_str}")
+else:
+    sorteios_historico_completos = []
 
-sorteios_historico_completos = extrair_sorteios_historicos(df_historico)
 ultimo_sorteio = sorteios_historico_completos[-1] if sorteios_historico_completos else []
 
 st.sidebar.markdown("---")
