@@ -478,6 +478,49 @@ with tab_gerador:
     else:
         st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
 
+    # -----------------------------------------------------------------------------
+    # CONFERÊNCIA HISTÓRICA DOS JOGOS GERADOS
+    # -----------------------------------------------------------------------------
+    if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
+        st.markdown("---")
+        st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
+        
+        if st.button("🔎 Verificar Premiações no Histórico Completo"):
+            premiacoes_encontradas = []
+            
+            for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
+                set_jogo = set(jogo)
+                
+                for idx_conc, sorteio in enumerate(sorteios_historico_completos):
+                    set_sorteio = set(sorteio)
+                    acertos = len(set_jogo.intersection(set_sorteio))
+                    
+                    if acertos >= 4:
+                        conc_num = df_historico.iloc[idx_conc].get('concurso', idx_conc + 1) if df_historico is not None else idx_conc + 1
+                        
+                        if acertos == 6:
+                            tipo = "Sena (6 acertos)"
+                        elif acertos == 5:
+                            tipo = "Quina (5 acertos)"
+                        else:
+                            tipo = "Quadra (4 acertos)"
+                            
+                        premiacoes_encontradas.append({
+                            "Jogo Gerado Nº": idx_jogo,
+                            "Dezenas do Jogo": ", ".join(f"{d:02d}" for d in sorted(jogo)),
+                            "Tipo de Prêmio": tipo,
+                            "Concurso": conc_num,
+                            "Dezenas Sorteadas": ", ".join(f"{d:02d}" for d in sorted(sorteio))
+                        })
+
+            if premiacoes_encontradas:
+                df_premios = pd.DataFrame(premiacoes_encontradas)
+                df_premios.index = df_premios.index + 1
+                st.success(f"🎉 Foram encontradas **{len(premiacoes_encontradas)}** ocorrências de premiações históricas para os jogos gerados!")
+                st.dataframe(df_premios, use_container_width=True)
+            else:
+                st.info("ℹ️ Nenhum dos jogos gerados nesta rodada obteve 4, 5 ou 6 acertos no histórico consultado.")
+
 with tab_metricas:
     st.subheader(f"📊 Desempenho e Cobertura — {opcao_matriz}")
     if sorteios_historico:
