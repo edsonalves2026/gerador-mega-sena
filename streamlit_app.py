@@ -1,519 +1,671 @@
-import time
-import uuid
-from datetime import datetime
-from collections import Counter
-import requests
 import streamlit as st
+import pandas as pd
+import numpy as np
+import itertools
+from itertools import combinations
+import io
+import os
+import random
+import requests
+from bs4 import BeautifulSoup
+import re
+
+# Configuração da página web
+st.set_page_config(page_title="Gerador Mega-Sena", page_icon="🎲", layout="wide")
 
 # -----------------------------------------------------------------------------
-# 🖨️ LOG COLORIDO NO TERMINAL
+# 1. AUTENTICAÇÃO / TELA DE LOGIN
 # -----------------------------------------------------------------------------
-class CoresTerminal:
-    AZUL = "\033[94m"
-    VERDE = "\033[92m"
-    VERMELHO = "\033[91m"
-    AMARELO = "\033[93m"
-    CIANO = "\033[96m"
-    RESET = "\033[0m"
+def verificar_autenticacao():
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
 
-def log_terminal(mensagem: str, cor: str = CoresTerminal.RESET):
-    horario = datetime.now().strftime('%H:%M:%S')
-    linha = f"{cor}[{horario}] {mensagem}{CoresTerminal.RESET}"
-    print(linha)
-    return linha
-
-# -----------------------------------------------------------------------------
-# 🛡️ CONFIGURAÇÕES E SEGURANÇA
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Monitor Bac-Bo Telegram",
-    page_icon="🤖",
-    layout="wide"
-)
-
-@st.cache_resource
-def carregar_credenciais():
-    try:
-        return st.secrets["TELEGRAM_TOKEN"], st.secrets["TELEGRAM_CHAT_ID"]
-    except (KeyError, Exception):
-        log_terminal("⚠️ Credenciais não configuradas no secrets.toml", CoresTerminal.AMARELO)
-        st.error("⚠️ Credenciais do Telegram não configuradas!")
-        st.stop()
-
-TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = carregar_credenciais()
-
-# -----------------------------------------------------------------------------
-# 🎛️ PAINEL DE CONTROLE (INTERFACE)
-# -----------------------------------------------------------------------------
-st.sidebar.title("🎛️ Painel de Controle")
-
-INTERVALO_VERIFICACAO = st.sidebar.slider(
-    "⏱️ Intervalo de Verificação (s)",
-    min_value=2, max_value=30, value=5, step=1
-)
-
-SENSIBILIDADE_MINIMA = st.sidebar.slider(
-    "🎯 Sensibilidade Mínima (%)",
-    min_value=50.0, max_value=95.0, value=70.0, step=1.0
-)
-
-TAMANHO_PADRAO = st.sidebar.slider(
-    "📏 Tamanho do Padrão (rodadas)",
-    min_value=2, max_value=8, value=3, step=1
-)
-
-MIN_OPERACOES_RANKING = st.sidebar.number_input(
-    "🏆 Mínimo de Amostras p/ Ranking",
-    min_value=1, max_value=10, value=3
-)
-
-st.sidebar.divider()
-MESA_ID = st.sidebar.text_input(
-    "🆔 ID da Mesa",
-    value="cc71e81d-8b56-4868-91c7-7224be543dce"
-)
-
-CONFIG = {
-    "MESA_ID": MESA_ID,
-    "INTERVALO_VERIFICACAO": INTERVALO_VERIFICACAO,
-    "SENSIBILIDADE_MINIMA": SENSIBILIDADE_MINIMA,
-    "TAMANHO_PADRAO": TAMANHO_PADRAO,
-    "MIN_OPERACOES_RANKING": MIN_OPERACOES_RANKING,
-    "LIMITE_RODADAS": 200,
-    "MAX_GALE": 1,
-    "TIMEZONE": "America/Sao_Paulo",
-    "TIMEOUT_API": 10,
-    "TIMEOUT_TELEGRAM": 5
-}
-
-# -----------------------------------------------------------------------------
-# 🎯 PADRÕES MANUAIS COMPOSTOS
-# -----------------------------------------------------------------------------
-PADROES_MANUAIS_COMPOSTOS = {
-    "composto_manual_1": {
-        "padrao": ["🔴 11", "🔵 8", "🔴 11"],
-        "sugestao": "🔵",
-        "nome_sugestao": "PLAYER",
-        "ativo": True,
-        "tamanho_padrao": 3
-    },
-    "composto_manual_2": {
-        "padrao": ["🔵 8", "🔴 11", "🔵 8"],
-        "sugestao": "🔴",
-        "nome_sugestao": "BANKER",
-        "ativo": True,
-        "tamanho_padrao": 3
-    }
-}
-
-# -----------------------------------------------------------------------------
-# 🧠 ESTADOS
-# -----------------------------------------------------------------------------
-def inicializar_estados():
-    estados = {
-        "sinal_ativo": False,
-        "sugestao_atual": None,
-        "tentativa": 0,
-        "ultimo_uuid_processado": None,
-        "ultimo_uuid_sinal_enviado": None,
-        "ultimo_uuid_tie_enviado": None,
-        "ultimo_uuid_tie_direto_enviado": None,
-        "historico_sinais": [],
-        "historico_ciclo": [],
-        "historico_usos": {},
-        "log_eventos": [],
-        "padrao_selecionado": None,
-        "ranking_padroes": {},
-        "ultimo_analise": None
-    }
-    for chave, valor in estados.items():
-        if chave not in st.session_state:
-            st.session_state[chave] = valor
-
-inicializar_estados()
-
-# -----------------------------------------------------------------------------
-# 📝 LOGS E RESULTADOS
-# -----------------------------------------------------------------------------
-def registrar_log(mensagem: str, cor_terminal=CoresTerminal.RESET):
-    log_terminal(mensagem, cor_terminal)
-    horario = datetime.now().strftime('%H:%M:%S')
-    st.session_state.log_eventos.insert(0, f"[{horario}] {mensagem}")
-    if len(st.session_state.log_eventos) > 50:
-        st.session_state.log_eventos.pop()
-
-def registrar_resultado(resultado: str, padrao_usado: str = None):
-    st.session_state.historico_sinais.append(resultado)
-    if len(st.session_state.historico_sinais) > 50:
-        st.session_state.historico_sinais.pop()
-
-    st.session_state.historico_ciclo.append(resultado)
-
-    if padrao_usado:
-        if padrao_usado not in st.session_state.ranking_padroes:
-            st.session_state.ranking_padroes[padrao_usado] = {"wins": 0, "total": 0}
-        
-        st.session_state.ranking_padroes[padrao_usado]["total"] += 1
-        if resultado in ["WIN", "WIN_G1", "WIN_TIE"]:
-            st.session_state.ranking_padroes[padrao_usado]["wins"] += 1
-
-    processar_fechamento_ciclo()
-
-# -----------------------------------------------------------------------------
-# 📊 FECHAMENTO DE CICLO (50 SINAIS)
-# -----------------------------------------------------------------------------
-def processar_fechamento_ciclo():
-    historico = st.session_state.historico_ciclo
-    total = len(historico)
-
-    if total < 50:
-        return
-
-    wins_diretos = historico.count("WIN")
-    wins_g1 = historico.count("WIN_G1")
-    wins_tie = historico.count("WIN_TIE")
-    losses = historico.count("LOSS")
-
-    total_wins = wins_diretos + wins_g1 + wins_tie
-    assertividade = (total_wins / total * 100) if total > 0 else 0
-
-    mensagem = (
-        "📊 *ASSERTIVIDADE FINAL - CICLO DE 50 ENTRADAS*\n\n"
-        f"🎯 *Win Direto:* `{wins_diretos}`\n"
-        f"🔄 *Win Gale 1:* `{wins_g1}`\n"
-        f"🟡 *Win Proteção (Tie):* `{wins_tie}`\n"
-        f"❌ *Loss:* `{losses}`\n\n"
-        f"🚀 *ASSERTIVIDADE GLOBAL:* `{assertividade:.1f}%`\n"
-        "─────────────────────────────\n"
-        "🔄 *Ciclo concluído! Reiniciando contador para as próximas 50.*"
-    )
-
-    enviar_mensagem_telegram(mensagem)
-    registrar_log("📊 CICLO DE 50 CONCLUÍDO!", CoresTerminal.CIANO)
-    st.session_state.historico_ciclo = []
-
-# -----------------------------------------------------------------------------
-# 🏆 RANKING FILTRADO E FORMATADO
-# -----------------------------------------------------------------------------
-def calcular_ranking_padroes():
-    ranking = []
-    min_ops = CONFIG["MIN_OPERACOES_RANKING"]
-
-    for padrao, dados in st.session_state.ranking_padroes.items():
-        if dados["total"] >= min_ops:
-            assertividade = (dados["wins"] / dados["total"]) * 100
-            ranking.append({
-                "padrao": padrao,
-                "acertos": dados["wins"],
-                "total": dados["total"],
-                "assertividade": assertividade
-            })
-    return sorted(ranking, key=lambda x: (x["assertividade"], x["total"]), reverse=True)
-
-def formatar_ranking_telegram() -> str:
-    ranking = calcular_ranking_padroes()
-    if not ranking:
-        return "🏆 *Ranking de Padrões:* Aguardando amostragem mínima."
-
-    linhas = ["🏆 *PADRÕES MAIS ASSERTIVOS DA SESSÃO:*"]
-    for i, item in enumerate(ranking[:5], 1):
-        linhas.append(
-            f"{i}. `{item['padrao']}` → *{item['assertividade']:.1f}%* "
-            f"({item['acertos']}/{item['total']})"
-        )
-    return "\n".join(linhas)
-
-def obter_texto_placar() -> str:
-    historico = st.session_state.historico_sinais
-    if not historico:
-        return "📊 *PLACAR:* Aguardando primeiras entradas..."
-
-    total = len(historico)
-    wins_direto = historico.count("WIN")
-    wins_g1 = historico.count("WIN_G1")
-    wins_tie = historico.count("WIN_TIE")
-    losses = historico.count("LOSS")
-    assertividade = ((wins_direto + wins_g1 + wins_tie) / total * 100) if total > 0 else 0
-
-    return (
-        f"📊 *PLACAR ACUMULADO ({total} entradas):*\n"
-        f"• 🎯 Win Direto: `{wins_direto}` | 🔄 Gale 1: `{wins_g1}`\n"
-        f"• 🟡 Proteção Tie: `{wins_tie}` | ❌ Loss: `{losses}`\n"
-        f"• 🚀 *Assertividade:* `{assertividade:.1f}%`"
-    )
-
-# -----------------------------------------------------------------------------
-# ✉️ TELEGRAM
-# -----------------------------------------------------------------------------
-def enviar_mensagem_telegram(texto: str) -> bool:
-    if not texto or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": texto,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=CONFIG["TIMEOUT_TELEGRAM"])
-        response.raise_for_status()
-        registrar_log("✅ Mensagem enviada ao Telegram!", CoresTerminal.VERDE)
+    if st.session_state.autenticado:
+        st.sidebar.markdown(f"👤 Logado como: **{st.session_state.get('usuario_atual', 'Usuário')}**")
+        if st.sidebar.button("🔒 Sair / Logout"):
+            st.session_state.autenticado = False
+            st.rerun()
         return True
-    except Exception as e:
-        registrar_log(f"❌ Falha no Telegram: {str(e)[:80]}", CoresTerminal.VERMELHO)
-        return False
 
-# -----------------------------------------------------------------------------
-# 🔌 BUSCA DE DADOS (API)
-# -----------------------------------------------------------------------------
-def buscar_historico_api():
-    url = (
-        f"https://api.core.public.tipminer.com/v1/bac-bo/rounds/{CONFIG['MESA_ID']}/history"
-        f"?limit={CONFIG['LIMITE_RODADAS']}&timezone={CONFIG['TIMEZONE'].replace('/', '%2F')}&_cb={uuid.uuid4()}"
-    )
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-
-    try:
-        response = requests.get(url, headers=headers, timeout=CONFIG["TIMEOUT_API"])
-        if response.status_code != 200:
-            return [], [], [], [], []
-
-        dados = response.json()
-        if not isinstance(dados, list):
-            return [], [], [], [], []
-
-        cores, uuids, pontos, compostos, exibicao_rodadas = [], [], [], [], []
-        for item in dados:
-            tipo = str(item.get("type", "")).upper()
-            uuid_r = item.get("uuid", "")
-            ponto = item.get("result", 0)
-
-            if "BANKER" in tipo or "RED" in tipo:
-                cor, nome = "🔴", "BANKER"
-            elif "PLAYER" in tipo or "BLUE" in tipo:
-                cor, nome = "🔵", "PLAYER"
-            elif "TIE" in tipo or "YELLOW" in tipo:
-                cor, nome = "🟡", "TIE"
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔒 Acesso Restrito")
+        st.subheader("Digite suas credenciais para acessar o gerador")
+        
+        usuario_input = st.text_input("Usuário:")
+        senha_input = st.text_input("Senha:", type="password")
+        
+        if st.button("Entrar", type="primary", use_container_width=True):
+            senhas_validas = st.secrets.get("passwords", {})
+            if usuario_input in senhas_validas and str(senhas_validas[usuario_input]) == senha_input:
+                st.session_state.autenticado = True
+                st.session_state.usuario_atual = usuario_input
+                st.rerun()
+            elif usuario_input == "MEGA-SENA" and senha_input == "2026":
+                st.session_state.autenticado = True
+                st.session_state.usuario_atual = usuario_input
+                st.rerun()
             else:
-                continue
+                st.error("Usuário ou senha incorretos!")
+                
+    return False
 
-            if not uuid_r:
-                continue
-
-            cores.append(cor)
-            uuids.append(uuid_r)
-            pontos.append(ponto)
-            compostos.append(f"{cor} {ponto}")
-            exibicao_rodadas.append(f"{cor} ({ponto})")
-
-        return cores[::-1], uuids[::-1], pontos[::-1], compostos[::-1], exibicao_rodadas[::-1]
-
-    except Exception:
-        return [], [], [], [], []
+if not verificar_autenticacao():
+    st.stop()
 
 # -----------------------------------------------------------------------------
-# 🧠 BUSCA HÍBRIDA DE PADRÕES (CORES + COMPOSTOS)
+# CONSTANTES E ESTRUTURAS DAS MATRIZES DE GRUPOS DE 40 DEZENAS
 # -----------------------------------------------------------------------------
-def analisar_multi_amostra(historico_cores: list, historico_compostos: list):
-    tamanho_p = CONFIG["TAMANHO_PADRAO"]
-    MINIMO_OCORRENCIAS = 3
+MOLDURA = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 30, 31, 40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}
+MIOLO = set(range(1, 61)) - MOLDURA
 
-    if len(historico_cores) < 50:
-        return None, 0.0, 0.0, None
+MATRIZ_24_GRUPOS = {
+    "Grupo 01": [3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 16, 17, 19, 20, 24, 25, 27, 30, 32, 33, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 53, 54, 56, 57, 58, 59, 60],
+    "Grupo 02": [1, 2, 4, 5, 6, 8, 10, 11, 13, 14, 17, 21, 22, 23, 24, 26, 27, 28, 29, 30, 32, 33, 35, 36, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 56, 59],
+    "Grupo 03": [1, 2, 4, 5, 6, 8, 10, 11, 12, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 28, 29, 30, 33, 34, 36, 37, 38, 39, 43, 44, 46, 47, 48, 50, 51, 52, 53, 55, 56, 60],
+    "Grupo 04": [1, 2, 3, 5, 7, 8, 9, 15, 16, 17, 18, 20, 22, 23, 26, 27, 28, 31, 32, 33, 34, 35, 37, 38, 39, 41, 42, 43, 45, 48, 49, 50, 51, 52, 53, 54, 55, 57, 58, 59],
+    "Grupo 05": [1, 4, 7, 9, 10, 13, 14, 15, 16, 18, 19, 20, 21, 23, 24, 26, 28, 29, 30, 31, 34, 35, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 51, 54, 55, 56, 57, 58, 60],
+    "Grupo 06": [2, 3, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 19, 20, 22, 24, 25, 27, 28, 29, 30, 31, 32, 33, 36, 38, 40, 41, 44, 46, 47, 50, 52, 53, 55, 57, 58, 59, 60],
+    "Grupo 07": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 21, 23, 24, 25, 27, 29, 31, 32, 33, 34, 35, 36, 37, 38, 42, 43, 44, 48, 49, 51, 52, 56, 57, 58, 59],
+    "Grupo 08": [1, 2, 3, 6, 9, 11, 12, 13, 14, 16, 17, 18, 19, 20, 23, 24, 26, 31, 32, 34, 35, 36, 37, 38, 39, 40, 42, 43, 45, 46, 47, 48, 49, 50, 52, 53, 54, 55, 58, 60],
+    "Grupo 09": [1, 3, 4, 5, 6, 7, 8, 9, 11, 13, 15, 17, 19, 21, 22, 23, 25, 27, 28, 29, 30, 31, 34, 35, 36, 37, 39, 41, 45, 46, 48, 50, 51, 53, 54, 56, 57, 58, 59, 60],
+    "Grupo 10": [2, 4, 6, 7, 8, 10, 14, 15, 16, 17, 18, 19, 22, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 35, 38, 39, 40, 42, 43, 45, 47, 48, 49, 50, 51, 52, 54, 56, 57, 60],
+    "Grupo 11": [1, 3, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 20, 21, 22, 24, 26, 27, 29, 30, 31, 33, 35, 36, 37, 38, 40, 41, 43, 44, 45, 47, 48, 51, 53, 55, 57, 58, 59],
+    "Grupo 12": [2, 3, 4, 6, 7, 9, 11, 12, 14, 15, 16, 18, 19, 20, 22, 23, 25, 26, 28, 29, 31, 32, 34, 35, 37, 38, 39, 41, 42, 43, 45, 46, 48, 49, 50, 52, 54, 56, 57, 60],
+    "Grupo 13": [1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 18, 20, 21, 23, 24, 25, 27, 28, 30, 32, 33, 34, 36, 37, 39, 40, 42, 44, 45, 46, 47, 49, 51, 52, 53, 55, 58, 59],
+    "Grupo 14": [3, 4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 19, 21, 22, 23, 25, 26, 27, 29, 30, 31, 32, 35, 36, 38, 39, 40, 41, 43, 44, 46, 47, 48, 50, 52, 54, 55, 56, 60],
+    "Grupo 15": [1, 2, 3, 6, 7, 8, 9, 11, 12, 14, 15, 17, 18, 19, 20, 21, 24, 25, 26, 28, 29, 31, 33, 34, 36, 37, 38, 40, 42, 43, 44, 45, 48, 49, 50, 51, 53, 56, 57, 58],
+    "Grupo 16": [2, 4, 5, 7, 9, 10, 11, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 27, 28, 30, 31, 33, 34, 35, 37, 38, 39, 41, 42, 44, 46, 47, 49, 50, 52, 53, 55, 56, 58, 59],
+    "Grupo 17": [1, 3, 4, 6, 8, 10, 11, 12, 13, 15, 16, 19, 20, 22, 23, 24, 26, 27, 29, 30, 32, 33, 35, 36, 37, 39, 40, 41, 43, 45, 46, 48, 49, 51, 52, 54, 55, 57, 58, 60],
+    "Grupo 18": [1, 2, 5, 6, 7, 8, 9, 12, 14, 15, 17, 18, 19, 21, 23, 25, 26, 28, 29, 31, 32, 34, 36, 38, 39, 40, 41, 42, 43, 44, 47, 48, 50, 51, 53, 54, 56, 57, 59, 60],
+    "Grupo 19": [3, 4, 5, 7, 8, 10, 11, 13, 14, 15, 16, 17, 18, 20, 22, 23, 24, 26, 27, 28, 29, 30, 33, 34, 35, 37, 38, 41, 42, 43, 45, 46, 47, 49, 50, 52, 53, 55, 56, 58],
+    "Grupo 20": [1, 2, 3, 6, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22, 24, 25, 27, 28, 30, 31, 32, 33, 36, 37, 39, 40, 41, 44, 45, 46, 48, 49, 51, 52, 54, 57, 58, 59, 60, 17],
+    "Grupo 21": [2, 3, 4, 5, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 27, 29, 31, 32, 34, 35, 36, 38, 40, 42, 43, 44, 47, 48, 50, 51, 53, 55, 56, 57, 59, 60],
+    "Grupo 22": [1, 4, 6, 7, 8, 10, 11, 13, 14, 15, 18, 19, 20, 22, 23, 24, 25, 28, 29, 30, 32, 33, 35, 37, 38, 39, 41, 42, 45, 46, 47, 49, 50, 52, 53, 55, 56, 58, 59, 60],
+    "Grupo 23": [1, 2, 3, 5, 6, 7, 10, 12, 13, 15, 16, 17, 18, 21, 22, 24, 26, 27, 28, 30, 31, 33, 34, 36, 37, 39, 40, 43, 44, 45, 46, 48, 49, 51, 52, 54, 57, 58, 59, 60],
+    "Grupo 24": [2, 3, 4, 8, 9, 11, 12, 14, 16, 17, 19, 20, 21, 23, 25, 26, 29, 30, 31, 32, 34, 35, 36, 38, 39, 41, 42, 43, 44, 47, 48, 50, 52, 53, 55, 56, 57, 58, 59, 60]
+}
 
-    def buscar_em_lista(amostra, padrao):
-        total, verm, azul = 0, 0, 0
-        tam = len(padrao)
-        for i in range(len(amostra) - tam):
-            if amostra[i : i + tam] == padrao:
-                proximo = historico_cores[i + tam] if len(amostra) == len(historico_cores) else amostra[i + tam]
-                total += 1
-                if proximo == "🔴":
-                    verm += 1
-                elif proximo == "🔵":
-                    azul += 1
-        if total < MINIMO_OCORRENCIAS:
-            return 0.0, 0.0, total
-        return (verm / total) * 100, (azul / total) * 100, total
+MATRIZ_51_GRUPOS = {
+     "Grupo 01": [1, 3, 5, 6, 9, 12, 13, 14, 17, 18, 20, 21, 22, 23, 25, 26, 27, 28, 29, 30, 33, 35, 36, 37, 38, 39, 41, 43, 44, 45, 46, 47, 49, 50, 51, 53, 55, 56, 57, 60],
+    "Grupo 02": [1, 2, 5, 6, 7, 8, 9, 11, 14, 17, 18, 21, 22, 23, 25, 26, 27, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 50, 51, 52, 53, 54, 59, 60],
+    "Grupo 03": [1, 2, 3, 5, 7, 8, 11, 12, 13, 14, 17, 18, 20, 21, 23, 25, 26, 27, 28, 29, 30, 33, 34, 36, 39, 40, 41, 42, 43, 44, 45, 46, 50, 52, 54, 55, 56, 57, 59, 60],
+    "Grupo 04": [1, 2, 3, 6, 7, 8, 9, 11, 12, 13, 20, 21, 22, 23, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 40, 42, 43, 45, 46, 47, 49, 51, 52, 53, 54, 55, 56, 57, 59],
+    "Grupo 05": [2, 3, 4, 6, 7, 8, 10, 11, 14, 15, 16, 19, 20, 21, 24, 26, 27, 30, 31, 32, 34, 35, 36, 37, 39, 40, 42, 43, 44, 47, 48, 49, 50, 52, 54, 55, 57, 58, 59, 60],
+    "Grupo 06": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 22, 24, 25, 30, 31, 32, 34, 35, 37, 38, 40, 41, 42, 47, 48, 49, 51, 52, 53, 54, 55, 57, 58, 59],
+    "Grupo 07": [2, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 17, 18, 20, 22, 25, 28, 29, 30, 34, 35, 37, 38, 39, 40, 41, 42, 44, 47, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60],
+    "Grupo 08": [1, 5, 8, 9, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 28, 29, 31, 33, 36, 38, 39, 40, 41, 43, 44, 45, 46, 48, 50, 51, 52, 53, 54, 56, 59, 60],
+    "Grupo 09": [1, 2, 3, 4, 6, 7, 8, 10, 11, 12, 13, 15, 16, 19, 20, 23, 24, 28, 29, 30, 31, 32, 33, 34, 35, 37, 40, 42, 45, 46, 47, 48, 49, 52, 54, 55, 56, 57, 58, 59],
+    "Grupo 10": [1, 3, 5, 6, 8, 12, 13, 15, 16, 17, 18, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 35, 36, 37, 40, 41, 43, 45, 46, 47, 48, 49, 52, 54, 55, 56, 57, 59],
+    "Grupo 11": [1, 3, 6, 8, 9, 12, 13, 14, 15, 16, 20, 22, 23, 24, 28, 29, 30, 31, 33, 35, 37, 38, 39, 40, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60],
+    "Grupo 12": [3, 5, 6, 8, 9, 14, 15, 16, 17, 18, 20, 21, 22, 24, 25, 26, 27, 30, 31, 35, 36, 37, 38, 39, 40, 41, 43, 44, 47, 48, 49, 50, 51, 52, 53, 54, 55, 57, 59, 60],
+    "Grupo 13": [1, 2, 5, 6, 7, 9, 11, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 28, 29, 31, 33, 34, 35, 37, 38, 39, 41, 42, 44, 45, 46, 47, 48, 49, 50, 51, 53, 56, 60],
+    "Grupo 14": [1, 2, 3, 4, 5, 7, 8, 10, 11, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 36, 40, 41, 42, 43, 45, 46, 48, 52, 54, 55, 57, 58, 59],
+    "Grupo 15": [2, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 21, 24, 25, 26, 27, 28, 29, 31, 34, 35, 36, 37, 39, 40, 41, 42, 43, 44, 47, 48, 49, 50, 52, 54, 56, 59, 60],
+    "Grupo 16": [1, 2, 3, 5, 7, 9, 11, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 33, 34, 36, 38, 39, 41, 42, 43, 44, 45, 46, 48, 50, 51, 53, 55, 57, 60],
+    "Grupo 17": [2, 3, 5, 6, 7, 9, 11, 12, 13, 15, 16, 17, 18, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 34, 35, 36, 37, 38, 41, 42, 43, 47, 48, 49, 51, 53, 55, 56, 57],
+    "Grupo 18": [1, 2, 3, 4, 6, 7, 9, 10, 11, 14, 15, 16, 19, 20, 22, 23, 24, 30, 31, 32, 33, 34, 35, 37, 38, 39, 42, 44, 45, 46, 47, 48, 49, 50, 51, 53, 55, 57, 58, 60],
+    "Grupo 19": [1, 2, 3, 6, 7, 11, 12, 13, 14, 15, 16, 20, 21, 23, 24, 26, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 39, 42, 43, 44, 45, 46, 47, 48, 49, 50, 55, 56, 57, 60],
+    "Grupo 20": [1, 2, 3, 5, 7, 8, 9, 11, 12, 13, 15, 16, 17, 18, 20, 22, 23, 24, 25, 28, 29, 30, 31, 33, 34, 38, 40, 41, 42, 45, 46, 48, 51, 52, 53, 54, 55, 56, 57, 59],
+    "Grupo 21": [2, 3, 7, 8, 9, 11, 12, 13, 14, 15, 16, 20, 21, 22, 24, 26, 27, 28, 29, 30, 31, 34, 36, 38, 39, 40, 42, 43, 44, 48, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60],
+    "Grupo 22": [2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 24, 25, 28, 29, 30, 31, 32, 34, 38, 39, 41, 42, 44, 48, 50, 51, 53, 55, 56, 57, 58, 60],
+    "Grupo 23": [1, 2, 3, 4, 7, 9, 10, 11, 12, 13, 15, 16, 19, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 36, 38, 42, 43, 45, 46, 48, 51, 53, 55, 56, 57, 58],
+    "Grupo 24": [1, 2, 3, 5, 6, 7, 8, 11, 14, 15, 16, 17, 18, 20, 23, 24, 25, 30, 31, 33, 34, 35, 37, 39, 40, 41, 42, 44, 45, 46, 47, 48, 49, 50, 52, 54, 55, 57, 59, 60],
+    "Grupo 25": [4, 5, 6, 8, 9, 10, 12, 13, 14, 17, 18, 19, 21, 22, 25, 26, 27, 28, 29, 32, 35, 36, 37, 38, 39, 40, 41, 43, 44, 47, 49, 50, 51, 52, 53, 54, 56, 58, 59, 60],
+    "Grupo 26": [1, 3, 4, 5, 8, 9, 10, 12, 13, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29, 30, 32, 33, 36, 38, 40, 41, 43, 45, 46, 51, 52, 53, 54, 55, 56, 57, 58, 59],
+    "Grupo 27": [2, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 22, 24, 28, 29, 31, 32, 34, 35, 37, 38, 39, 40, 42, 44, 47, 48, 49, 50, 51, 52, 53, 54, 56, 58, 59, 60],
+    "Grupo 28": [1, 3, 4, 5, 6, 8, 9, 10, 14, 17, 18, 19, 20, 22, 23, 25, 30, 32, 33, 35, 37, 38, 39, 40, 41, 44, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55, 57, 58, 59, 60],
+    "Grupo 29": [1, 3, 4, 6, 8, 10, 12, 13, 14, 19, 20, 21, 23, 26, 27, 28, 29, 30, 32, 33, 35, 36, 37, 39, 40, 43, 44, 45, 46, 47, 49, 50, 52, 54, 55, 56, 57, 58, 59, 60],
+    "Grupo 30": [1, 2, 4, 5, 7, 9, 10, 11, 12, 13, 14, 17, 18, 19, 21, 22, 23, 25, 26, 27, 28, 29, 32, 33, 34, 36, 38, 39, 41, 42, 43, 44, 45, 46, 50, 51, 53, 56, 58, 60],
+    "Grupo 31": [1, 2, 4, 6, 7, 8, 9, 10, 11, 15, 16, 19, 21, 22, 23, 24, 26, 27, 31, 32, 33, 34, 35, 36, 37, 38, 40, 42, 43, 45, 46, 47, 48, 49, 51, 52, 53, 54, 58, 59],
+    "Grupo 32": [1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 17, 18, 19, 23, 25, 28, 29, 32, 33, 34, 35, 37, 39, 40, 41, 42, 44, 45, 46, 47, 49, 50, 52, 54, 56, 58, 59, 60],
+    "Grupo 33": [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 17, 18, 19, 20, 22, 23, 25, 28, 29, 30, 32, 33, 34, 35, 37, 38, 41, 42, 45, 46, 47, 49, 51, 53, 55, 56, 57, 58],
+    "Grupo 34": [2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 19, 20, 21, 22, 26, 27, 28, 29, 30, 32, 34, 35, 36, 37, 38, 39, 42, 43, 44, 47, 49, 50, 51, 53, 55, 56, 57, 58, 60],
+    "Grupo 35": [1, 2, 3, 4, 5, 6, 7, 10, 11, 14, 17, 18, 19, 20, 21, 23, 25, 26, 27, 30, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 45, 46, 47, 49, 50, 55, 57, 58, 60],
+    "Grupo 36": [1, 2, 4, 7, 8, 10, 11, 12, 13, 14, 15, 16, 19, 21, 23, 24, 26, 27, 28, 29, 31, 32, 33, 34, 36, 39, 40, 42, 43, 44, 45, 46, 48, 50, 52, 54, 56, 58, 59, 60],
+    "Grupo 37": [1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 19, 20, 22, 23, 28, 29, 30, 32, 33, 34, 38, 39, 40, 42, 44, 45, 46, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60],
+    "Grupo 38": [2, 3, 4, 5, 7, 8, 9, 10, 11, 14, 17, 18, 19, 20, 21, 22, 25, 26, 27, 30, 32, 34, 36, 38, 39, 40, 41, 42, 43, 44, 50, 51, 52, 53, 54, 55, 57, 58, 59, 60],
+    "Grupo 39": [1, 2, 4, 5, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 22, 23, 24, 25, 31, 32, 33, 34, 38, 39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 53, 54, 58, 59, 60],
+    "Grupo 40": [2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 17, 18, 19, 20, 21, 25, 26, 27, 28, 29, 30, 32, 34, 35, 36, 37, 40, 41, 42, 43, 47, 49, 52, 54, 55, 56, 57, 58, 59],
+    "Grupo 41": [2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29, 31, 32, 34, 36, 38, 40, 41, 42, 43, 48, 51, 52, 53, 54, 56, 58, 59],
+    "Grupo 42": [1, 4, 6, 9, 10, 12, 13, 14, 15, 16, 19, 21, 22, 23, 24, 26, 27, 28, 29, 31, 32, 33, 35, 36, 37, 38, 39, 43, 44, 45, 46, 47, 48, 49, 50, 51, 53, 56, 58, 60],
+    "Grupo 43": [1, 4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 19, 22, 23, 24, 25, 28, 29, 31, 32, 33, 35, 37, 38, 40, 41, 45, 46, 47, 48, 49, 51, 52, 53, 54, 56, 58, 59],
+    "Grupo 44": [2, 4, 5, 6, 7, 9, 10, 11, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 31, 32, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 47, 48, 49, 50, 51, 53, 58, 60],
+    "Grupo 45": [1, 2, 4, 5, 6, 7, 10, 11, 12, 13, 15, 16, 17, 18, 19, 21, 23, 24, 25, 26, 27, 28, 29, 31, 32, 33, 34, 35, 36, 37, 41, 42, 43, 45, 46, 47, 48, 49, 56, 58],
+    "Grupo 46": [1, 4, 5, 6, 8, 10, 14, 15, 16, 17, 18, 19, 21, 23, 24, 25, 26, 27, 31, 32, 33, 35, 36, 37, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 50, 52, 54, 58, 59, 60],
+    "Grupo 47": [1, 3, 4, 5, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 36, 39, 41, 43, 44, 45, 46, 48, 50, 55, 56, 57, 58, 60],
+    "Grupo 48": [1, 3, 4, 5, 6, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 35, 36, 37, 38, 41, 43, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58],
+    "Grupo 49": [3, 4, 5, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 24, 25, 28, 29, 30, 31, 32, 35, 37, 39, 40, 41, 44, 47, 48, 49, 50, 52, 54, 55, 56, 57, 58, 59, 60],
+    "Grupo 50": [3, 4, 6, 8, 9, 10, 12, 13, 15, 16, 19, 20, 21, 22, 24, 26, 27, 28, 29, 30, 31, 32, 35, 36, 37, 38, 40, 43, 47, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59],
+    "Grupo 51": [1, 3, 4, 8, 9, 10, 14, 15, 16, 19, 20, 21, 22, 23, 24, 26, 27, 30, 31, 32, 33, 36, 38, 39, 40, 43, 44, 45, 46, 48, 50, 51, 52, 53, 54, 55, 57, 58, 59, 60]
+}
 
-    # 1. Testa busca com Padrão Composto (Cor + Número)
-    padrao_comp = historico_compostos[-tamanho_p:]
-    prob_r_c, prob_b_c, oc_c = buscar_em_lista(historico_compostos, padrao_comp)
+st.sidebar.header("📐 Matriz de Referência")
+opcao_matriz = st.sidebar.radio(
+    "Selecione a Matriz para Análise:",
+    ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)")
+)
 
-    if oc_c >= MINIMO_OCORRENCIAS:
-        if prob_r_c >= CONFIG["SENSIBILIDADE_MINIMA"]:
-            return "🔴", round(prob_r_c, 1), round(prob_r_c, 1), " | ".join(padrao_comp)
-        if prob_b_c >= CONFIG["SENSIBILIDADE_MINIMA"]:
-            return "🔵", round(prob_b_c, 1), round(prob_b_c, 1), " | ".join(padrao_comp)
-
-    # 2. Fallback para busca por Sequência de Cores
-    padrao_cor = historico_cores[-tamanho_p:]
-    prob_r_30, prob_b_30, _ = buscar_em_lista(historico_cores[-50:], padrao_cor)
-    prob_r_tot, prob_b_tot, oc_tot = buscar_em_lista(historico_cores, padrao_cor)
-
-    padrao_str = " | ".join(padrao_cor)
-    st.session_state.ultimo_analise = {
-        "padrao": padrao_str,
-        "prob30_r": round(prob_r_30, 1), "prob30_b": round(prob_b_30, 1),
-        "prob50_r": round(prob_r_tot, 1), "prob50_b": round(prob_b_tot, 1),
-        "tamanho": tamanho_p
-    }
-
-    if prob_r_tot >= CONFIG["SENSIBILIDADE_MINIMA"] and oc_tot >= MINIMO_OCORRENCIAS:
-        return "🔴", round(prob_r_30, 1), round(prob_r_tot, 1), padrao_str
-    if prob_b_tot >= CONFIG["SENSIBILIDADE_MINIMA"] and oc_tot >= MINIMO_OCORRENCIAS:
-        return "🔵", round(prob_b_30, 1), round(prob_b_tot, 1), padrao_str
-
-    return None, 0.0, 0.0, None
-
-# -----------------------------------------------------------------------------
-# 📈 ESTUDO DE TIE
-# -----------------------------------------------------------------------------
-def calcular_estudo_tie(historico_cores: list) -> str:
-    if "🟡" not in historico_cores or len(historico_cores) < 50:
-        return "⚪ *Status Tie:* Dados insuficientes."
-
-    indices = [i for i, c in enumerate(historico_cores) if c == "🟡"]
-    distancia = (len(historico_cores) - 1) - indices[-1]
-    gaps = [indices[i] - indices[i-1] - 1 for i in range(1, len(indices))]
-    vezes = Counter(gaps).get(distancia, 0)
-
-    if vezes >= 2:
-        return f"🔥 *PROBABILIDADE ALTA!* `{distancia}R` sem Tie ocorreu `{vezes}x`."
-    if distancia <= 3:
-        return f"⚡ *ZONA DE ECO!* Apenas `{distancia}R` desde o último Tie."
-    return f"📊 *Status Normal:* `{distancia}R` sem Tie (freq: {vezes}x)."
-
-def verificar_radar_tie_aquecido(historico_cores: list, uuid_atual: str):
-    if len(historico_cores) < 50 or "🟡" not in historico_cores[-20:]:
-        return
-    if st.session_state.get("ultimo_uuid_tie_enviado") == uuid_atual:
-        return
-
-    dist = (len(historico_cores) - 1) - [i for i, c in enumerate(historico_cores) if c == "🟡"][-1]
-    if dist in [0, 1, 2, 3, 17]:
-        st.session_state["ultimo_uuid_tie_enviado"] = uuid_atual
-        enviar_mensagem_telegram(
-            f"⚠️ *RADAR TIE - ZONA AQUECIDA* 🟡\n"
-            f"• Distância Atual: `{dist}R` sem Empate.\n"
-            f"💡 Considere reforçar a cobertura no TIE."
-        )
-
-# -----------------------------------------------------------------------------
-# ✅ VERIFICAÇÃO DE RESULTADO
-# -----------------------------------------------------------------------------
-def verificar_resultado(ultimo_resultado: str):
-    if not st.session_state.sinal_ativo:
-        return
-
-    esperado = st.session_state.sugestao_atual
-    padrao_usado = st.session_state.padrao_selecionado
-    acertou = (ultimo_resultado == esperado) or (ultimo_resultado == "🟡")
-
-    if acertou:
-        tipo_win = "WIN_TIE" if ultimo_resultado == "🟡" else ("WIN" if st.session_state.tentativa == 1 else "WIN_G1")
-        registrar_resultado(tipo_win, padrao_usado)
-        
-        txt_win = "GREEN DE PRIMEIRA! 🟡" if tipo_win == "WIN_TIE" else ("WIN DIRETO! 🎯" if tipo_win == "WIN" else "WIN NO GALE 1! 🎯")
-        enviar_mensagem_telegram(f"✅ *{txt_win}*\nResultado: `{ultimo_resultado}`\n\n{obter_texto_placar()}")
-        
-        st.session_state.sinal_ativo = False
-        st.session_state.padrao_selecionado = None
-
-    elif st.session_state.tentativa == 1:
-        st.session_state.tentativa = 2
-        enviar_mensagem_telegram(f"⚠️ *NÃO BATEU 1ª → GALE 1*\nMantém: {esperado}")
-    else:
-        registrar_resultado("LOSS", padrao_usado)
-        enviar_mensagem_telegram(f"❌ *LOSS CONFIRMADO*\nResultado: `{ultimo_resultado}`\n\n{obter_texto_placar()}")
-        st.session_state.sinal_ativo = False
-        st.session_state.padrao_selecionado = None
+GRUPOS_40 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
 
 # -----------------------------------------------------------------------------
-# 🔄 LOOP PRINCIPAL
+# FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
 # -----------------------------------------------------------------------------
-def processar_rodada():
-    cores, uuids, pontos, compostos, exibicao = buscar_historico_api()
-    if not uuids:
-        return
+def get_quadrante(d):
+    row = (d - 1) // 10
+    col = (d - 1) % 10
+    if row < 3 and col < 5: return 1
+    elif row < 3 and col >= 5: return 2
+    elif row >= 3 and col < 5: return 3
+    else: return 4
 
-    uuid_atual = uuids[-1]
-    if uuid_atual != st.session_state.ultimo_uuid_processado:
-        st.session_state.ultimo_uuid_processado = uuid_atual
-        registrar_log(f"Nova rodada: {exibicao[-1]}", CoresTerminal.AZUL)
+def extrair_sorteios_historicos(df):
+    if df is None or df.empty: return []
+    cols_dezenas = [c for c in df.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
+    if len(cols_dezenas) < 6: return []
+    return [list(map(int, row)) for row in df[cols_dezenas].values]
 
-    ultimo_resultado = cores[-1]
-
-    verificar_radar_tie_aquecido(cores, uuid_atual)
-
-    if st.session_state.sinal_ativo:
-        verificar_resultado(ultimo_resultado)
-
-    if not st.session_state.sinal_ativo:
-        sugestao, prob30, prob50, padrao = analisar_multi_amostra(cores, compostos)
-
-        if sugestao and st.session_state.ultimo_uuid_sinal_enviado != uuid_atual:
-            st.session_state.sinal_ativo = True
-            st.session_state.sugestao_atual = sugestao
-            st.session_state.tentativa = 1
-            st.session_state.padrao_selecionado = padrao
-            st.session_state.ultimo_uuid_sinal_enviado = uuid_atual
-
-            nome_cor = "🔴 BANKER" if sugestao == "🔴" else "🔵 PLAYER"
+@st.cache_data(ttl=3600)
+def carregar_dados_online():
+    url = "https://asloterias.com.br/lista-de-resultados-da-mega-sena"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            container = soup.find('div', class_='col-md-8')
+            if not container: return None
             
-            mensagem = (
-                "🤖 *BAC BO PRO - SINAL VIP CONFIRMADO*\n\n"
-                f"🎯 *ENTRADA PRINCIPAL:* {nome_cor}\n"
-                "🛡️ *PROTEÇÃO:* 🟡 TIE (Empate)\n"
-                "🔄 *GESTÃO:* Até Gale 1\n\n"
-                f"🔍 *PADRÃO IDENTIFICADO:*\n`{padrao}`\n\n"
-                f"📊 *ASSERTIVIDADE:* 30R: `{prob30:.1f}%` | 50R: `{prob50:.1f}%`\n\n"
-                f"{calcular_estudo_tie(cores)}\n\n"
-                f"{formatar_ranking_telegram()}\n\n"
-                f"{obter_texto_placar()}"
-            )
+            texto_completo = container.get_text(separator='\n')
+            padrao = re.compile(r'(\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})')
+            
+            dados = []
+            for match in padrao.finditer(texto_completo):
+                conc, data, d1, d2, d3, d4, d5, d6 = match.groups()
+                dados.append([int(conc), data, int(d1), int(d2), int(d3), int(d4), int(d5), int(d6)])
+            
+            if dados:
+                df = pd.DataFrame(dados, columns=['concurso', 'data', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
+                return df.sort_values(by='concurso').reset_index(drop=True)
+    except Exception:
+        return None
+    return None
 
-            if enviar_mensagem_telegram(mensagem):
-                registrar_log(f"SINAL ENVIADO: {nome_cor} | Padrão: {padrao}", CoresTerminal.VERDE)
+def carregar_dados():
+    caminho_local = "mega_sena.xlsx"
+    if os.path.exists(caminho_local):
+        try:
+            return pd.read_excel(caminho_local)
+        except Exception:
+            pass
+    return carregar_dados_online()
+
+def calcular_atrasos_dezenas(sorteios):
+    atrasos = {d: 0 for d in range(1, 61)}
+    if not sorteios: return atrasos
+    for d in range(1, 61):
+        count = 0
+        for s in reversed(sorteios):
+            if d in s: break
+            count += 1
+        atrasos[d] = count
+    return atrasos
+
+def purificar_dezenas_com_atraso(pool, atrasos, n_desejado=24):
+    candidatos = sorted(pool, key=lambda d: atrasos.get(d, 0), reverse=True)
+    
+    pares_moldura = [d for d in candidatos if d % 2 == 0 and d in MOLDURA]
+    impares_moldura = [d for d in candidatos if d % 2 != 0 and d in MOLDURA]
+    pares_miolo = [d for d in candidatos if d % 2 == 0 and d in MIOLO]
+    impares_miolo = [d for d in candidatos if d % 2 != 0 and d in MIOLO]
+    
+    selecionadas = []
+    listas = [pares_moldura, impares_moldura, pares_miolo, impares_miolo]
+    idx = 0
+    while len(selecionadas) < n_desejado and any(listas):
+        target = listas[idx % 4]
+        if target:
+            selecionadas.append(target.pop(0))
+        idx += 1
+    return sorted(selecionadas)
+
+def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima=4, limite_max=50):
+    """
+    Aplica redução matemática estilo Fechamento / Redução Direcionada.
+    Garante que se acertar X dezenas entre as 24, teremos pelo menos Y acertos.
+    """
+    if not comb_aprovadas: return []
+    
+    selecionados = []
+    restantes = list(comb_aprovadas)
+    random.shuffle(restantes)
+    
+    while restantes and len(selecionados) < limite_max:
+        escolhido = restantes.pop(0)
+        selecionados.append(escolhido)
+        set_e = set(escolhido)
+        
+        # Filtra combinações já cobertas pela garantia estipulada
+        novos_restantes = []
+        for c in restantes:
+            overlap = len(set_e.intersection(set(c)))
+            if overlap < garantia_minima:
+                novos_restantes.append(c)
+        restantes = novos_restantes
+        
+    return selecionados
+
+def analisar_metricas_completas_grupos(sorteios, grupos_dict):
+    if not sorteios: return pd.DataFrame()
+    
+    total_sorteios = len(sorteios)
+    coberturas_sena = {nome: set() for nome in grupos_dict}
+    desempenho = {nome: {'Sena': 0, 'Quina': 0, 'Quadra': 0} for nome in grupos_dict}
+    atraso_sena = {nome: total_sorteios for nome in grupos_dict}
+    atraso_quina = {nome: total_sorteios for nome in grupos_dict}
+    
+    for idx_concurso, s in enumerate(sorteios):
+        set_s = set(s)
+        for nome, dezenas in grupos_dict.items():
+            set_g = set(dezenas)
+            acertos = len(set_s.intersection(set_g))
+            if acertos == 6:
+                coberturas_sena[nome].add(idx_concurso)
+                desempenho[nome]['Sena'] += 1
+                atraso_sena[nome] = 0
+            else:
+                atraso_sena[nome] += 1
+                
+            if acertos == 5:
+                desempenho[nome]['Quina'] += 1
+                atraso_quina[nome] = 0
+            else:
+                atraso_quina[nome] += 1
+                
+            if acertos == 4:
+                desempenho[nome]['Quadra'] += 1
+
+    rows = []
+    for nome, dezenas in grupos_dict.items():
+        cob_total = len(coberturas_sena[nome])
+        outros_grupos = set().union(*[coberturas_sena[g] for g in grupos_dict if g != nome])
+        cob_exclusiva = len(coberturas_sena[nome] - outros_grupos)
+        
+        set_g = set(dezenas)
+        outras_sobr = [len(set_g.intersection(set(grupos_dict[o]))) for o in grupos_dict if o != nome]
+        redundancia = np.mean(outras_sobr) if outras_sobr else 0
+        
+        rows.append({
+            "Grupo": nome,
+            "Cob. Total (Sena)": cob_total,
+            "Cob. Exclusiva": cob_exclusiva,
+            "Redundância Média": round(redundancia, 2),
+            "Senas (6)": desempenho[nome]['Sena'],
+            "Quinas (5)": desempenho[nome]['Quina'],
+            "Quadras (4)": desempenho[nome]['Quadra'],
+            "Atraso Sena": atraso_sena[nome],
+            "Atraso Quina": atraso_quina[nome]
+        })
+        
+    return pd.DataFrame(rows)
+
+def ranquear_grupos_quentes(sorteios, grupos_dict):
+    if not sorteios or len(sorteios) < 5:
+        return pd.DataFrame([{'Grupo': k, 'Score': 0, 'Média Acertos': 0, '5+ Acertos': 0} for k in list(grupos_dict.keys())[:10]])
+    
+    scores = {}
+    for nome, dezenas in grupos_dict.items():
+        set_g = set(dezenas)
+        pontos = 0
+        acertos_list = []
+        for s in sorteios:
+            ac = len(set(s).intersection(set_g))
+            acertos_list.append(ac)
+            if ac == 6: pontos += 100
+            elif ac == 5: pontos += 50
+            elif ac == 4: pontos += 10
+            pontos += ac
+        scores[nome] = {
+            'pontos': pontos,
+            'media_acertos': round(np.mean(acertos_list), 2),
+            'quinas_senas': sum(1 for a in acertos_list if a >= 5)
+        }
+        
+    df_rank = pd.DataFrame([
+        {'Grupo': k, 'Score': v['pontos'], 'Média Acertos': v['media_acertos'], '5+ Acertos': v['quinas_senas']}
+        for k, v in scores.items()
+    ]).sort_values(by='Score', ascending=False)
+    
+    return df_rank
+
+def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
+    if not sorteios: return pd.DataFrame()
+    nomes_grupos = list(grupos_dict.keys())
+    comb_trincas = list(combinations(nomes_grupos, 3))
+    resultados = []
+    
+    for g1, g2, g3 in comb_trincas:
+        pool_unificado = set(grupos_dict[g1] + grupos_dict[g2] + grupos_dict[g3])
+        senas, quinas, quadras = 0, 0, 0
+        for s in sorteios:
+            ac = len(set(s).intersection(pool_unificado))
+            if ac == 6: senas += 1
+            elif ac == 5: quinas += 1
+            elif ac == 4: quadras += 1
+            
+        score = (senas * 100) + (quinas * 40) + (quadras * 10)
+        resultados.append({
+            'Trinca': f"{g1} + {g2} + {g3}",
+            'Grupos': [g1, g2, g3],
+            'Score': score,
+            'Senas (6)': senas,
+            'Quinas (5)': quinas,
+            'Quadras (4)': quadras,
+            'Qtd Dezenas Únicas': len(pool_unificado)
+        })
+        
+    df_trincas = pd.DataFrame(resultados).sort_values(by=['Score', 'Senas (6)', 'Quinas (5)'], ascending=False)
+    return df_trincas.head(top_n)
 
 # -----------------------------------------------------------------------------
-# 🖥️ INTERFACE PAINEL
+# SEÇÃO DA BARRA LATERAL (MODO ONLINE/OFFLINE E MATRIZES)
 # -----------------------------------------------------------------------------
-st.title("🤖 Monitor Bac-Bo VIP")
+st.sidebar.header("📁 Base Histórica")
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Status", "🔴 ATIVO" if st.session_state.sinal_ativo else "🟢 AGUARDANDO")
-col2.metric("Entrada", st.session_state.sugestao_atual or "—")
-col3.metric("Tentativa", f"Gale {st.session_state.tentativa - 1}" if st.session_state.tentativa > 1 else "1ª Entrada")
-col4.metric("Padrão em Uso", f"`{st.session_state.padrao_selecionado}`" if st.session_state.padrao_selecionado else "—")
+# Nova opção de escolha entre Online e Offline
+modo_operacao = st.sidebar.radio(
+    "Modo de Operação:",
+    ["🌐 Conectado Online", "📂 Modo Offline (Planilha Excel)"],
+    index=0
+)
 
-st.subheader("🏆 Ranking de Padrões Mais Assertivos")
-ranking = calcular_ranking_padroes()
-if ranking:
-    st.dataframe(
-        [
-            {
-                "Posição": f"#{i}",
-                "Padrão": item["padrao"],
-                "Acertos": item["acertos"],
-                "Total Entradas": item["total"],
-                "Assertividade": f"{item['assertividade']:.1f}%"
-            }
-            for i, item in enumerate(ranking, 1)
-        ],
-        use_container_width=True, hide_index=True
-    )
+df_historico = None
+
+if modo_operacao == "🌐 Conectado Online":
+    # Sua função existente de carregamento online
+    df_historico = carregar_dados()
+    if df_historico is not None and not df_historico.empty:
+        st.sidebar.success("🌐 Conectado online (`asloterias`)")
+    else:
+        st.sidebar.warning("Não foi possível carregar online. Tente o modo offline.")
 else:
-    st.info(f"⏳ Aguardando padrões atingirem o mínimo de {CONFIG['MIN_OPERACOES_RANKING']} entradas para exibição.")
+    uploaded_file = st.sidebar.file_uploader("Upload manual da planilha", type=["csv", "xlsx"])
+    if uploaded_file is not None:
+        try:
+            df_historico = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+            st.sidebar.success("Base carregada via Upload!")
+        except Exception as e:
+            st.sidebar.error(f"Erro no upload: {e}")
+    else:
+            st.sidebar.info("Carregue uma planilha Excel ou CSV para iniciar no modo offline.")
 
-st.subheader("📋 Logs do Sistema")
-log_container = st.empty()
+# Extração dos sorteios completos
+sorteios_historico_completos_bruto = extrair_sorteios_historicos(df_historico) if df_historico is not None and not df_historico.empty else []
 
-processar_rodada()
-log_container.code("\n".join(st.session_state.log_eventos[:15]), language=None)
+# SELETOR INTERATIVO DE CONCURSO (MODO OFFLINE OU GERAL)
+if df_historico is not None and not df_historico.empty and sorteios_historico_completos_bruto:
+    # Cria uma lista de opções de concursos disponíveis na base
+    lista_concursos_disponiveis = []
+    for idx_c, _ in enumerate(sorteios_historico_completos_bruto):
+        conc_num = df_historico.iloc[idx_c].get('concurso', idx_c + 1)
+        data_conc = df_historico.iloc[idx_c].get('data', '')
+        label_c = f"Concurso #{conc_num}" + (f" ({data_conc})" if data_conc else "")
+        lista_concursos_disponiveis.append((conc_num, idx_c, label_c))
+    
+    # Caixa seletora interativa para o usuário definir o limite do concurso atual
+    labels_opcoes = [item[2] for item in lista_concursos_disponiveis]
+    escolha_concurso_str = st.sidebar.selectbox(
+        "🎯 Definir Concurso de Referência (Corte):",
+        options=labels_opcoes,
+        index=len(labels_opcoes) - 1 # Padrão é sempre o mais recente
+    )
+    
+    # Encontra o índice correspondente à escolha
+    indice_selecionado = next(item[1] for item in lista_concursos_disponiveis if item[2] == escolha_concurso_str)
+    
+    # Corta a lista de histórico exatamente até o concurso selecionado pelo usuário
+    sorteios_historico_completos = sorteios_historico_completos_bruto[:indice_selecionado + 1]
+    
+    # Atualiza o registro visual do último concurso com base na escolha
+    ultimo_registro = df_historico.iloc[indice_selecionado]
+    conc_num = ultimo_registro.get('concurso', 'N/A')
+    data_conc = ultimo_registro.get('data', '')
+    data_str = f" ({data_conc})" if data_conc else ""
+    
+    cols_dezenas = [c for c in df_historico.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
+    
+    if len(cols_dezenas) == 6:
+        dezenas_ultimo = [f"{int(ultimo_registro[c]):02d}" for c in cols_dezenas]
+        dezenas_texto = " - ".join(dezenas_ultimo)
+        st.sidebar.info(
+            f"📌 **Concurso Referência:** #{conc_num}{data_str}\n\n"
+            f"🎯 **Dezenas:** `{dezenas_texto}`"
+        )
+    else:
+        st.sidebar.info(f"📌 **Concurso Referência:** #{conc_num}{data_str}")
+else:
+    sorteios_historico_completos = []
 
-time.sleep(CONFIG["INTERVALO_VERIFICACAO"])
-st.rerun()
+ultimo_sorteio = sorteios_historico_completos[-1] if sorteios_historico_completos else []
+
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Escopo da Análise")
+if sorteios_historico_completos:
+    max_c = len(sorteios_historico_completos)
+    qtd_janela = st.sidebar.number_input("Últimos Concursos para Análise de Grupos:", min_value=10, max_value=max_c, value=min(100, max_c), step=10)
+    sorteios_historico = sorteios_historico_completos[-qtd_janela:]
+    st.sidebar.caption(f"Analisando últimos **{len(sorteios_historico)}** concursos.")
+else:
+    sorteios_historico = []
+
+atrasos_dezenas = calcular_atrasos_dezenas(sorteios_historico)
+
+# FILTROS ESTRUTURAIS
+st.sidebar.header("⚙️ Filtros Estruturais")
+min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 300, (150, 210))
+pares_aceitos = st.sidebar.multiselect("Pares Aceitos", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
+moldura_aceita = st.sidebar.multiselect("Moldura Aceita", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
+max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 4, 2)
+min_quad = st.sidebar.slider("Mínimo Quadrantes", 1, 4, 3)
+max_repetidas = st.sidebar.slider("Máximo Repetidas", 0, 4, 2)
+
+st.sidebar.header("🛡️ Garantias Adicionais / Fechamento")
+ativar_garantia = st.sidebar.checkbox("Ativar Garantia Matemática Adicional", value=True)
+opcao_garantia = st.sidebar.selectbox(
+    "Nível de Garantia Exigida:",
+    [
+        "Quadra Garantida (Se acertar 4 nas 24)",
+        "Quina Garantida (Se acertar 5 nas 24)",
+        "Sena Garantida (Se acertar 6 nas 24)"
+    ],
+    index=0
+)
+
+st.sidebar.header("📌 Regra: Dezenas Fixas")
+usar_fixas = st.sidebar.checkbox("Ativar Dezenas Fixas Obrigatórias", value=False)
+dezenas_fixas_sel = []
+
+if usar_fixas:
+    dezenas_fixas_sel = st.sidebar.multiselect(
+        "Escolha 1 ou 2 dezenas fixas (1 a 60):",
+        options=list(range(1, 61)),
+        max_selections=2
+    )
+
+qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
+
+tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", f"📊 Métricas dos Grupos ({opcao_matriz})", "🔥 Top Trincas Dinâmicas"])
+
+with tab_gerador:
+    st.subheader("1. Estratégia de Seleção das 40 Dezenas Base")
+    
+    opcao_estrategia = st.radio(
+        "Selecione o Método de Escolha das 40 Dezenas:",
+        [
+            f"Top 3 Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
+            f"Top Trinca Dinâmica (Ranking nos Últimos {len(sorteios_historico)} Concursos)",
+            "Seleção Manual (40 Dezenas)"
+        ]
+    )
+    
+    pool_40 = []
+    
+    if opcao_estrategia.startswith("Top 3 Grupos"):
+        df_rank = ranquear_grupos_quentes(sorteios_historico, GRUPOS_40)
+        top_10 = df_rank.head(10)
+        
+        st.markdown(f"**Top 10 Grupos Individuais nos Últimos {len(sorteios_historico)} Concursos:**")
+        st.dataframe(top_10[['Grupo', 'Score', 'Média Acertos', '5+ Acertos']], use_container_width=True)
+        
+        top_3_nomes = top_10.head(3)['Grupo'].tolist()
+        st.success(f"**Grupos Selecionados Automaticamente (Top 3):** {', '.join(top_3_nomes)}")
+        pool_40 = sorted(list(set(GRUPOS_40[top_3_nomes[0]] + GRUPOS_40[top_3_nomes[1]] + GRUPOS_40[top_3_nomes[2]])))
+        
+    elif opcao_estrategia.startswith("Top Trinca"):
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=5)
+        if not df_top_trincas.empty:
+            st.markdown(f"**Top 5 Melhores Trincas dos Últimos {len(sorteios_historico)} Concursos:**")
+            st.dataframe(df_top_trincas[['Trinca', 'Score', 'Senas (6)', 'Quinas (5)', 'Quadras (4)']], use_container_width=True)
+            
+            trinca_escolhida = st.selectbox("Escolha uma das Top Trincas:", df_top_trincas['Trinca'].tolist())
+            row_trinca = df_top_trincas[df_top_trincas['Trinca'] == trinca_escolhida].iloc[0]
+            g_list = row_trinca['Grupos']
+            pool_40 = sorted(list(set(GRUPOS_40[g_list[0]] + GRUPOS_40[g_list[1]] + GRUPOS_40[g_list[2]])))
+        else:
+            st.warning("Carregue o histórico para calcular a Top Trinca.")
+            grupo_padrao = list(GRUPOS_40.keys())[0]
+            pool_40 = GRUPOS_40[grupo_padrao]
+            
+    else:
+        grupo_padrao = list(GRUPOS_40.keys())[0]
+        pool_40 = st.multiselect("Selecione 40 dezenas:", options=list(range(1, 61)), default=GRUPOS_40[grupo_padrao])
+
+    st.markdown("---")
+    st.subheader("2. Purificação Multicritério (40 ➔ 24 Dezenas) + Atrasos")
+    
+    if len(pool_40) >= 24:
+        dezenas_24 = purificar_dezenas_com_atraso(pool_40, atrasos_dezenas, n_desejado=24)
+        st.info(f"**Dezenas Purificadas (24):** {dezenas_24}")
+        
+        if st.button("⚡ Executar Filtros Gaussiano & Gerar Apostas Diversificadas", type="primary"):
+            comb_totais = list(combinations(dezenas_24, 6))
+            aprovados = []
+            
+            for comb in comb_totais:
+                if usar_fixas and dezenas_fixas_sel:
+                    if not all(d in comb for d in dezenas_fixas_sel):
+                        continue
+
+                s = sum(comb)
+                if not (min_soma <= s <= max_soma): continue
+                if sum(1 for d in comb if d % 2 == 0) not in pares_aceitos: continue
+                if sum(1 for d in comb if d in MOLDURA) not in moldura_aceita: continue
+                
+                c_s = sorted(comb)
+                seq, m_seq = 1, 1
+                for i in range(len(c_s)-1):
+                    if c_s[i+1] == c_s[i] + 1:
+                        seq += 1
+                        m_seq = max(m_seq, seq)
+                    else: seq = 1
+                if m_seq > max_seq: continue
+                
+                if len(set(get_quadrante(d) for d in comb)) < min_quad: continue
+                if ultimo_sorteio and sum(1 for d in comb if d in ultimo_sorteio) > max_repetidas: continue
+                
+                aprovados.append(comb)
+                
+            st.success(f"**Combinações Que Passaram nos Filtros:** {len(aprovados):,}")
+            
+            if aprovados:
+                # Aplicação da Garantia Adicional de Redução Matemática
+                if ativar_garantia:
+                    if "Quadra" in opcao_garantia:
+                        n_garant = 4
+                    elif "Quina" in opcao_garantia:
+                        n_garant = 5
+                    else:
+                        n_garant = 6
+                    
+                    jogos_finais = aplicar_reducao_garantia(aprovados, garantia_minima=n_garant, limite_max=qtd_exportar)
+                    st.info(f"🛡️ **Garantia Adicional Aplicada:** Reduzido para os melhores {len(jogos_finais)} jogos cobrindo a garantia **{opcao_garantia}**.")
+                else:
+                    random.shuffle(aprovados)
+                    jogos_finais = aprovados[:qtd_exportar]
+                
+                jogos_exibicao = [sorted(list(j)) for j in jogos_finais]
+                
+                df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
+                df_jogos.index = df_jogos.index + 1
+                
+                st.session_state['jogos_gerados_atuais'] = jogos_exibicao
+                st.dataframe(df_jogos, use_container_width=True)
+                
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_jogos.to_excel(writer, sheet_name='Jogos_Filtrados', index_label='Jogo')
+                st.download_button(
+                    "📥 Baixar Planilha (.xlsx)", 
+                    data=buffer.getvalue(), 
+                    file_name="jogos_mega_sena.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+    else:
+        st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
+
+    # CONFERÊNCIA HISTÓRICA DOS JOGOS GERADOS
+    if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
+        st.markdown("---")
+        st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
+        
+        if st.button("🔎 Verificar Premiações no Histórico Completo"):
+            premiacoes_encontradas = []
+            
+            for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
+                set_jogo = set(jogo)
+                
+                for idx_conc, sorteio in enumerate(sorteios_historico_completos):
+                    set_sorteio = set(sorteio)
+                    acertos = len(set_jogo.intersection(set_sorteio))
+                    
+                    if acertos >= 4:
+                        conc_num = df_historico.iloc[idx_conc].get('concurso', idx_conc + 1) if df_historico is not None else idx_conc + 1
+                        
+                        if acertos == 6:
+                            tipo = "Sena (6 acertos)"
+                        elif acertos == 5:
+                            tipo = "Quina (5 acertos)"
+                        else:
+                            tipo = "Quadra (4 acertos)"
+                            
+                        premiacoes_encontradas.append({
+                            "Jogo Gerado Nº": idx_jogo,
+                            "Dezenas do Jogo": ", ".join(f"{d:02d}" for d in sorted(jogo)),
+                            "Tipo de Prêmio": tipo,
+                            "Concurso": conc_num,
+                            "Dezenas Sorteadas": ", ".join(f"{d:02d}" for d in sorted(sorteio))
+                        })
+
+            if premiacoes_encontradas:
+                df_premios = pd.DataFrame(premiacoes_encontradas)
+                df_premios.index = df_premios.index + 1
+                st.success(f"🎉 Foram encontradas **{len(premiacoes_encontradas)}** ocorrências de premiações históricas para os jogos gerados!")
+                st.dataframe(df_premios, use_container_width=True)
+            else:
+                st.info("ℹ️ Nenhum dos jogos gerados nesta rodada obteve 4, 5 ou 6 acertos no histórico consultado.")
+
+with tab_metricas:
+    st.subheader(f"📊 Desempenho e Cobertura — {opcao_matriz}")
+    if sorteios_historico:
+        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, GRUPOS_40)
+        st.dataframe(df_metricas, use_container_width=True)
+    else:
+        st.info("Nenhum dado histórico carregado para exibir métricas.")
+
+with tab_trincas:
+    st.subheader("🔥 Top Trincas Dinâmicas de Grupos")
+    if sorteios_historico:
+        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=15)
+        st.dataframe(df_trincas_tab, use_container_width=True)
+    else:
+        st.info("Nenhum dado histórico carregado para analisar trincas.")
