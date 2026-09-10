@@ -149,6 +149,34 @@ opcao_matriz = st.sidebar.radio(
 GRUPOS_40 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
 
 # -----------------------------------------------------------------------------
+# CONSTANTES E ESTRUTURAS DE DADOS
+# -----------------------------------------------------------------------------
+MOLDURA = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    11, 20, 21, 30, 31, 40, 41, 50,
+    51, 52, 53, 54, 55, 56, 57, 58, 59, 60
+}
+MIOLO = set(range(1, 61)) - MOLDURA
+
+# Matrizes Padrão de Exemplo
+GRUPOS_40 = {
+    "Grupo A": list(range(1, 41)),
+    "Grupo B": list(range(11, 51)),
+    "Grupo C": list(range(21, 61)),
+    "Grupo D": list(range(1, 21)) + list(range(41, 61))
+}
+
+GRUPOS_24 = {
+    f"Grupo 24_{i+1}": list(range(i+1, i+41)) if i+41 <= 61 else list(range(i+1, 61)) + list(range(1, (i+41)-60))
+    for i in range(24)
+}
+
+GRUPOS_51 = {
+    f"Grupo 51_{i+1}": list(range(i+1, i+41)) if i+41 <= 61 else list(range(i+1, 61)) + list(range(1, (i+41)-60))
+    for i in range(51)
+}
+
+# -----------------------------------------------------------------------------
 # FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
 # -----------------------------------------------------------------------------
 def get_quadrante(d):
@@ -230,10 +258,6 @@ def purificar_dezenas_com_atraso(pool, atrasos, n_desejado=24):
     return sorted(selecionadas)
 
 def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima=4, limite_max=50):
-    """
-    Aplica redução matemática estilo Fechamento / Redução Direcionada.
-    Garante que se acertar X dezenas entre as 24, teremos pelo menos Y acertos.
-    """
     if not comb_aprovadas: return []
     
     selecionados = []
@@ -245,7 +269,6 @@ def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima
         selecionados.append(escolhido)
         set_e = set(escolhido)
         
-        # Filtra combinações já cobertas pela garantia estipulada
         novos_restantes = []
         for c in restantes:
             overlap = len(set_e.intersection(set(c)))
@@ -368,11 +391,16 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     return df_trincas.head(top_n)
 
 # -----------------------------------------------------------------------------
-# SEÇÃO DA BARRA LATERAL (MODO ONLINE/OFFLINE E MATRIZES)
+# BARRA LATERAL (SIDEBAR)
 # -----------------------------------------------------------------------------
-st.sidebar.header("📁 Base Histórica")
+st.sidebar.header("📁 Base Histórica & Matriz")
 
-# Nova opção de escolha entre Online e Offline
+opcao_matriz = st.sidebar.selectbox(
+    "Escolha a Matriz Ativa:",
+    ["Matriz Base (40 Grupos)", "Matriz Expandida (24 Grupos)", "Matriz Especial (51 Grupos)"],
+    index=0
+)
+
 modo_operacao = st.sidebar.radio(
     "Modo de Operação:",
     ["🌐 Conectado Online", "📂 Modo Offline (Planilha Excel)"],
@@ -382,7 +410,6 @@ modo_operacao = st.sidebar.radio(
 df_historico = None
 
 if modo_operacao == "🌐 Conectado Online":
-    # Sua função existente de carregamento online
     df_historico = carregar_dados()
     if df_historico is not None and not df_historico.empty:
         st.sidebar.success("🌐 Conectado online (`asloterias`)")
@@ -396,15 +423,10 @@ else:
             st.sidebar.success("Base carregada via Upload!")
         except Exception as e:
             st.sidebar.error(f"Erro no upload: {e}")
-    else:
-            st.sidebar.info("Carregue uma planilha Excel ou CSV para iniciar no modo offline.")
 
-# Extração dos sorteios completos
 sorteios_historico_completos_bruto = extrair_sorteios_historicos(df_historico) if df_historico is not None and not df_historico.empty else []
 
-# SELETOR INTERATIVO DE CONCURSO (MODO OFFLINE OU GERAL)
 if df_historico is not None and not df_historico.empty and sorteios_historico_completos_bruto:
-    # Cria uma lista de opções de concursos disponíveis na base
     lista_concursos_disponiveis = []
     for idx_c, _ in enumerate(sorteios_historico_completos_bruto):
         conc_num = df_historico.iloc[idx_c].get('concurso', idx_c + 1)
@@ -412,21 +434,16 @@ if df_historico is not None and not df_historico.empty and sorteios_historico_co
         label_c = f"Concurso #{conc_num}" + (f" ({data_conc})" if data_conc else "")
         lista_concursos_disponiveis.append((conc_num, idx_c, label_c))
     
-    # Caixa seletora interativa para o usuário definir o limite do concurso atual
     labels_opcoes = [item[2] for item in lista_concursos_disponiveis]
     escolha_concurso_str = st.sidebar.selectbox(
         "🎯 Definir Concurso de Referência (Corte):",
         options=labels_opcoes,
-        index=len(labels_opcoes) - 1 # Padrão é sempre o mais recente
+        index=len(labels_opcoes) - 1
     )
     
-    # Encontra o índice correspondente à escolha
     indice_selecionado = next(item[1] for item in lista_concursos_disponiveis if item[2] == escolha_concurso_str)
-    
-    # Corta a lista de histórico exatamente até o concurso selecionado pelo usuário
     sorteios_historico_completos = sorteios_historico_completos_bruto[:indice_selecionado + 1]
     
-    # Atualiza o registro visual do último concurso com base na escolha
     ultimo_registro = df_historico.iloc[indice_selecionado]
     conc_num = ultimo_registro.get('concurso', 'N/A')
     data_conc = ultimo_registro.get('data', '')
@@ -449,27 +466,27 @@ else:
 ultimo_sorteio = sorteios_historico_completos[-1] if sorteios_historico_completos else []
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Escopo da Análise")
+st.sidebar.header("⚙️ Escopo & Formato de Aposta")
+qtd_dezenas_aposta = st.sidebar.slider("Dezenas por Aposta:", min_value=6, max_value=15, value=10, step=1)
+
 if sorteios_historico_completos:
     max_c = len(sorteios_historico_completos)
-    qtd_janela = st.sidebar.number_input("Últimos Concursos para Análise de Grupos:", min_value=10, max_value=max_c, value=min(100, max_c), step=10)
+    qtd_janela = st.sidebar.number_input("Últimos Concursos para Análise:", min_value=10, max_value=max_c, value=min(100, max_c), step=10)
     sorteios_historico = sorteios_historico_completos[-qtd_janela:]
-    st.sidebar.caption(f"Analisando últimos **{len(sorteios_historico)}** concursos.")
 else:
     sorteios_historico = []
 
 atrasos_dezenas = calcular_atrasos_dezenas(sorteios_historico)
 
-# FILTROS ESTRUTURAIS
 st.sidebar.header("⚙️ Filtros Estruturais")
-min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 300, (150, 210))
-pares_aceitos = st.sidebar.multiselect("Pares Aceitos", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
-moldura_aceita = st.sidebar.multiselect("Moldura Aceita", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
-max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 4, 2)
+min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 450, (150, 250))
+pares_aceitos = st.sidebar.multiselect("Pares Aceitos", list(range(0, qtd_dezenas_aposta + 1)), default=list(range(2, qtd_dezenas_aposta - 1)))
+moldura_aceita = st.sidebar.multiselect("Moldura Aceita", list(range(0, qtd_dezenas_aposta + 1)), default=list(range(2, qtd_dezenas_aposta - 1)))
+max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 5, 2)
 min_quad = st.sidebar.slider("Mínimo Quadrantes", 1, 4, 3)
-max_repetidas = st.sidebar.slider("Máximo Repetidas", 0, 4, 2)
+max_repetidas = st.sidebar.slider("Máximo Repetidas", 0, 6, 2)
 
-st.sidebar.header("🛡️ Garantias Adicionais / Fechamento")
+st.sidebar.header("🛡️ Garantias Adicionais")
 ativar_garantia = st.sidebar.checkbox("Ativar Garantia Matemática Adicional", value=True)
 opcao_garantia = st.sidebar.selectbox(
     "Nível de Garantia Exigida:",
@@ -494,61 +511,77 @@ if usar_fixas:
 
 qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
 
-tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", f"📊 Métricas dos Grupos ({opcao_matriz})", "🔥 Top Trincas Dinâmicas"])
+# -----------------------------------------------------------------------------
+# INTERFACE PRINCIPAL - ABAS
+# -----------------------------------------------------------------------------
+tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", "📊 Métricas dos Grupos", "🔥 Top Trincas Dinâmicas"])
 
 with tab_gerador:
-    st.subheader("1. Estratégia de Seleção das 40 Dezenas Base")
+    # 1. IDENTIFICAÇÃO DINÂMICA DA MATRIZ ATIVA
+    grupos_ativos = GRUPOS_24 if "24" in str(opcao_matriz) else GRUPOS_51 if "51" in str(opcao_matriz) else GRUPOS_40
+    
+    st.subheader(f"1. Estratégia de Seleção das Dezenas Base ({opcao_matriz})")
     
     opcao_estrategia = st.radio(
-        "Selecione o Método de Escolha das 40 Dezenas:",
+        "Selecione o Método de Escolha das Dezenas Base:",
         [
-            f"Top 3 Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
+            f"Top Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
             f"Top Trinca Dinâmica (Ranking nos Últimos {len(sorteios_historico)} Concursos)",
-            "Seleção Manual (40 Dezenas)"
+            "Seleção Manual de Dezenas"
         ]
     )
     
-    pool_40 = []
+    pool_dezenas = []
     
-    if opcao_estrategia.startswith("Top 3 Grupos"):
-        df_rank = ranquear_grupos_quentes(sorteios_historico, GRUPOS_40)
+    if opcao_estrategia.startswith("Top Grupos"):
+        df_rank = ranquear_grupos_quentes(sorteios_historico, grupos_ativos)
         top_10 = df_rank.head(10)
         
-        st.markdown(f"**Top 10 Grupos Individuais nos Últimos {len(sorteios_historico)} Concursos:**")
+        st.markdown(f"**Top 10 Grupos Individuais na Matriz Ativa ({len(grupos_ativos)} Grupos):**")
         st.dataframe(top_10[['Grupo', 'Score', 'Média Acertos', '5+ Acertos']], use_container_width=True)
         
-        top_3_nomes = top_10.head(3)['Grupo'].tolist()
-        st.success(f"**Grupos Selecionados Automaticamente (Top 3):** {', '.join(top_3_nomes)}")
-        pool_40 = sorted(list(set(GRUPOS_40[top_3_nomes[0]] + GRUPOS_40[top_3_nomes[1]] + GRUPOS_40[top_3_nomes[2]])))
+        qtd_grupos_top = 3 if len(grupos_ativos) <= 24 else 4
+        top_nomes = top_10.head(qtd_grupos_top)['Grupo'].tolist()
+        
+        st.success(f"**Grupos Selecionados (Top {qtd_grupos_top}):** {', '.join(top_nomes)}")
+        
+        dezenas_acumuladas = []
+        for g_nome in top_nomes:
+            dezenas_acumuladas.extend(grupos_ativos[g_nome])
+        pool_dezenas = sorted(list(set(dezenas_acumuladas)))
         
     elif opcao_estrategia.startswith("Top Trinca"):
-        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=5)
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, grupos_ativos, top_n=5)
         if not df_top_trincas.empty:
-            st.markdown(f"**Top 5 Melhores Trincas dos Últimos {len(sorteios_historico)} Concursos:**")
+            st.markdown(f"**Top 5 Melhores Trincas na Matriz Ativa:**")
             st.dataframe(df_top_trincas[['Trinca', 'Score', 'Senas (6)', 'Quinas (5)', 'Quadras (4)']], use_container_width=True)
             
             trinca_escolhida = st.selectbox("Escolha uma das Top Trincas:", df_top_trincas['Trinca'].tolist())
             row_trinca = df_top_trincas[df_top_trincas['Trinca'] == trinca_escolhida].iloc[0]
             g_list = row_trinca['Grupos']
-            pool_40 = sorted(list(set(GRUPOS_40[g_list[0]] + GRUPOS_40[g_list[1]] + GRUPOS_40[g_list[2]])))
+            
+            dezenas_acumuladas = []
+            for g_nome in g_list:
+                dezenas_acumuladas.extend(grupos_ativos[g_nome])
+            pool_dezenas = sorted(list(set(dezenas_acumuladas)))
         else:
             st.warning("Carregue o histórico para calcular a Top Trinca.")
-            grupo_padrao = list(GRUPOS_40.keys())[0]
-            pool_40 = GRUPOS_40[grupo_padrao]
+            grupo_padrao = list(grupos_ativos.keys())[0]
+            pool_dezenas = grupos_ativos[grupo_padrao]
             
     else:
-        grupo_padrao = list(GRUPOS_40.keys())[0]
-        pool_40 = st.multiselect("Selecione 40 dezenas:", options=list(range(1, 61)), default=GRUPOS_40[grupo_padrao])
+        grupo_padrao = list(grupos_ativos.keys())[0]
+        pool_dezenas = st.multiselect("Selecione as dezenas base:", options=list(range(1, 61)), default=grupos_ativos[grupo_padrao])
 
     st.markdown("---")
-    st.subheader("2. Purificação Multicritério (40 ➔ 24 Dezenas) + Atrasos")
+    st.subheader("2. Purificação Multicritério ➔ 24 Dezenas Purificadas")
     
-    if len(pool_40) >= 24:
-        dezenas_24 = purificar_dezenas_com_atraso(pool_40, atrasos_dezenas, n_desejado=24)
+    if len(pool_dezenas) >= 24:
+        dezenas_24 = purificar_dezenas_com_atraso(pool_dezenas, atrasos_dezenas, n_desejado=24)
         st.info(f"**Dezenas Purificadas (24):** {dezenas_24}")
         
-        if st.button("⚡ Executar Filtros Gaussiano & Gerar Apostas Diversificadas", type="primary"):
-            comb_totais = list(combinations(dezenas_24, 6))
+        if st.button(f"⚡ Executar Filtros Gaussiano & Gerar Apostas ({qtd_dezenas_aposta} Dezenas)", type="primary"):
+            comb_totais = list(combinations(dezenas_24, qtd_dezenas_aposta))
             aprovados = []
             
             for comb in comb_totais:
@@ -578,7 +611,6 @@ with tab_gerador:
             st.success(f"**Combinações Que Passaram nos Filtros:** {len(aprovados):,}")
             
             if aprovados:
-                # Aplicação da Garantia Adicional de Redução Matemática
                 if ativar_garantia:
                     if "Quadra" in opcao_garantia:
                         n_garant = 4
@@ -595,7 +627,8 @@ with tab_gerador:
                 
                 jogos_exibicao = [sorted(list(j)) for j in jogos_finais]
                 
-                df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
+                colunas_bolas = [f"Bola {i+1}" for i in range(qtd_dezenas_aposta)]
+                df_jogos = pd.DataFrame(jogos_exibicao, columns=colunas_bolas)
                 df_jogos.index = df_jogos.index + 1
                 
                 st.session_state['jogos_gerados_atuais'] = jogos_exibicao
@@ -607,11 +640,11 @@ with tab_gerador:
                 st.download_button(
                     "📥 Baixar Planilha (.xlsx)", 
                     data=buffer.getvalue(), 
-                    file_name="jogos_mega_sena.xlsx",
+                    file_name=f"jogos_mega_sena_{qtd_dezenas_aposta}_dezenas.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
     else:
-        st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
+        st.error(f"O Pool selecionado possui apenas {len(pool_dezenas)} dezenas. Escolha mais grupos para atingir no mínimo 24 dezenas.")
 
     # CONFERÊNCIA HISTÓRICA DOS JOGOS GERADOS
     if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
@@ -655,17 +688,19 @@ with tab_gerador:
                 st.info("ℹ️ Nenhum dos jogos gerados nesta rodada obteve 4, 5 ou 6 acertos no histórico consultado.")
 
 with tab_metricas:
-    st.subheader(f"📊 Desempenho e Cobertura — {opcao_matriz}")
+    st.subheader("📊 Desempenho e Cobertura — Matriz Ativa")
+    grupos_metricas = GRUPOS_24 if "24" in str(opcao_matriz) else GRUPOS_51 if "51" in str(opcao_matriz) else GRUPOS_40
     if sorteios_historico:
-        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, GRUPOS_40)
+        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, grupos_metricas)
         st.dataframe(df_metricas, use_container_width=True)
     else:
         st.info("Nenhum dado histórico carregado para exibir métricas.")
 
 with tab_trincas:
     st.subheader("🔥 Top Trincas Dinâmicas de Grupos")
+    grupos_trincas = GRUPOS_24 if "24" in str(opcao_matriz) else GRUPOS_51 if "51" in str(opcao_matriz) else GRUPOS_40
     if sorteios_historico:
-        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=15)
+        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, grupos_trincas, top_n=15)
         st.dataframe(df_trincas_tab, use_container_width=True)
     else:
         st.info("Nenhum dado histórico carregado para analisar trincas.")
