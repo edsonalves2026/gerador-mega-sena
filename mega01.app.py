@@ -201,17 +201,8 @@ def carregar_dados():
             pass
     return carregar_dados_online()
 
-# --- NOVA FUNÇÃO: CÁLCULO DE MOMENTUM (BASEADO NO VBA) ---
+# --- FUNÇÃO DE MOMENTUM (BASEADO NA SUA MACRO VBA) ---
 def calcular_momentum_dezenas(sorteios_recentes, janela_recente=25):
-    """
-    Calcula a pontuação de Momentum para cada dezena (1 a 60).
-    Replica a lógica da macro VBA:
-    - Frequência recente (janela de 25 concursos)
-    - Frequência total
-    - Atraso atual
-    - Bônus Radar (2 a 4 concursos de atraso)
-    - Fator sorte (Rnd)
-    """
     if not sorteios_recentes:
         return {d: 1.0 for d in range(1, 61)}
         
@@ -220,7 +211,7 @@ def calcular_momentum_dezenas(sorteios_recentes, janela_recente=25):
     ultima_aparicao = {d: 0 for d in range(1, 61)}
     
     total_sorteios = len(sorteios_recentes)
-    ultimo_concurso_idx = total_sorteios # O último concurso é o index mais alto
+    ultimo_concurso_idx = total_sorteios
     
     for idx, s in enumerate(sorteios_recentes):
         for d in s:
@@ -238,10 +229,8 @@ def calcular_momentum_dezenas(sorteios_recentes, janela_recente=25):
         atraso = (ultimo_concurso_idx - ultima_aparicao[d]) - 1
         if atraso < 0: atraso = 0
         
-        # Bônus Radar (2 a 4 atrasos)
         bonus_radar = 15 if 2 <= atraso <= 4 else 0
         
-        # Cálculo do Score (Freq Rec * 50 + Freq Tot * 30 + Bônus + Rnd*5)
         score = ((freq_recente[d] / max_freq_recente) * 50) + \
                 ((freq_total[d] / max_freq_total) * 30) + \
                 bonus_radar + (random.random() * 5)
@@ -250,13 +239,8 @@ def calcular_momentum_dezenas(sorteios_recentes, janela_recente=25):
         
     return pontuacao
 
-# --- NOVA FUNÇÃO: PURIFICAÇÃO USANDO MOMENTUM ---
+# --- FUNÇÃO DE PURIFICAÇÃO COM MOMENTUM ---
 def purificar_com_momentum(pool, pontuacao_momentum, n_desejado=24):
-    """
-    Purifica o pool de dezenas usando a pontuação de Momentum,
-    mas mantendo o equilíbrio de Par/Ímpar e Moldura/Miolo.
-    """
-    # Ordena o pool pela pontuação de momentum (maior para menor)
     candidatos = sorted(pool, key=lambda d: pontuacao_momentum.get(d, 0), reverse=True)
     
     pares_moldura = [d for d in candidatos if d % 2 == 0 and d in MOLDURA]
@@ -381,7 +365,6 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     resultados = []
     
     for g1, g2, g3 in comb_trincas:
-        # Conta frequencia das dezenas na trinca para priorizar as mais fortes
         todas_dezenas = grupos_dict[g1] + grupos_dict[g2] + grupos_dict[g3]
         contagem = Counter(todas_dezenas)
         pool_ordenado = sorted(contagem.keys(), key=lambda d: (contagem[d], d), reverse=True)
@@ -414,6 +397,78 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
         ascending=False
     )
     return df_trincas.head(top_n)
+
+# --- NOVA FUNÇÃO: CONFERÊNCIA DE ACERTOS (ESPELHO DA SUA PLANILHA) ---
+def gerar_conferencia_acertos_grupos(sorteios, grupos_dict):
+    if not sorteios:
+        return pd.DataFrame()
+
+    resultados = []
+
+    for nome, dezenas in grupos_dict.items():
+        set_g = set(dezenas)
+        senas = 0
+        quinas = 0
+        quadras = 0
+        
+        atraso_atual = {'4': 0, '5': 0, '6': 0}
+        maior_atraso = {'4': 0, '5': 0, '6': 0}
+        soma_atrasos = {'4': 0, '5': 0, '6': 0}
+        contagem_atrasos = {'4': 0, '5': 0, '6': 0}
+        
+        atraso_temp = {'4': 0, '5': 0, '6': 0}
+        
+        for s in sorteios:
+            acertos = len(set_g.intersection(set(s)))
+            
+            if acertos >= 4:
+                quadras += 1
+                if acertos >= 5: quinas += 1
+                if acertos == 6: senas += 1
+                
+                for nivel in ['4', '5', '6']:
+                    if acertos >= int(nivel):
+                        if atraso_temp[nivel] > maior_atraso[nivel]:
+                            maior_atraso[nivel] = atraso_temp[nivel]
+                        soma_atrasos[nivel] += atraso_temp[nivel]
+                        contagem_atrasos[nivel] += 1
+                        atraso_temp[nivel] = 0
+                    else:
+                        atraso_temp[nivel] += 1
+            else:
+                for nivel in ['4', '5', '6']:
+                    atraso_temp[nivel] += 1
+                    
+        atraso_atual['4'] = atraso_temp['4']
+        atraso_atual['5'] = atraso_temp['5']
+        atraso_atual['6'] = atraso_temp['6']
+        
+        media_4 = round(soma_atrasos['4'] / contagem_atrasos['4'], 1) if contagem_atrasos['4'] > 0 else 0
+        media_5 = round(soma_atrasos['5'] / contagem_atrasos['5'], 1) if contagem_atrasos['5'] > 0 else 0
+        media_6 = round(soma_atrasos['6'] / contagem_atrasos['6'], 1) if contagem_atrasos['6'] > 0 else 0
+
+        pontos = (senas * 100) + (quinas * 50) + (quadras * 10)
+
+        resultados.append({
+            "Grupo": nome,
+            "Pontos": pontos,
+            "Senas (6)": senas,
+            "Quinas (5)": quinas,
+            "Quadras (4)": quadras,
+            "Atraso (4)": atraso_atual['4'],
+            "Atraso (5)": atraso_atual['5'],
+            "Atraso (6)": atraso_atual['6'],
+            "Maior Atraso (4)": maior_atraso['4'],
+            "Maior Atraso (5)": maior_atraso['5'],
+            "Maior Atraso (6)": maior_atraso['6'],
+            "Média (4)": media_4,
+            "Média (5)": media_5,
+            "Média (6)": media_6
+        })
+
+    df = pd.DataFrame(resultados)
+    return df.sort_values(by="Pontos", ascending=False).reset_index(drop=True)
+
 
 # -----------------------------------------------------------------------------
 # SEÇÃO DA BARRA LATERAL (MODO ONLINE/OFFLINE E MATRIZES)
@@ -496,13 +551,12 @@ if sorteios_historico_completos:
 else:
     sorteios_historico = []
 
-# MOMENTUM CALCULADO AQUI (Baseado na sua macro VBA)
-# Usamos os últimos 25 concursos para a janela recente, conforme o VBA.
+# MOMENTUM CALCULADO AQUI
 momentum_scores = calcular_momentum_dezenas(sorteios_historico, janela_recente=25)
 
 # FILTROS ESTRUTURAIS
 st.sidebar.header("⚙️ Filtros Estruturais")
-min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 300, (160, 210)) # Ajustado para padrão da macro
+min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 300, (160, 210))
 pares_aceitos = st.sidebar.multiselect("Pares Aceitos", [0, 1, 2, 3, 4, 5, 6], default=[2, 3, 4])
 moldura_aceita = st.sidebar.multiselect("Moldura Aceita", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
 max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 4, 2)
@@ -534,7 +588,15 @@ if usar_fixas:
 
 qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
 
-tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", f"📊 Métricas dos Grupos ({opcao_matriz})", "🔥 Top Trincas Dinâmicas"])
+# -----------------------------------------------------------------------------
+# ABAS DO SISTEMA
+# -----------------------------------------------------------------------------
+tab_gerador, tab_metricas, tab_trincas, tab_conferencia = st.tabs([
+    "🚀 Gerador & Recalibragem", 
+    f"📊 Métricas dos Grupos ({opcao_matriz})", 
+    "🔥 Top Trincas Dinâmicas",
+    "📋 Conferência de Acertos dos Grupos"
+])
 
 with tab_gerador:
     st.subheader("1. Estratégia de Seleção das Dezenas Base (Matriz Base (40 Grupos))")
@@ -544,6 +606,7 @@ with tab_gerador:
         [
             f"Top Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
             f"Top Trinca Dinâmica (Ranking nos Últimos {len(sorteios_historico)} Concursos)",
+            "🧠 Seleção Inteligente via Auditoria (Ciclos e Atrasos)",
             "Seleção Manual de Dezenas"
         ]
     )
@@ -574,6 +637,32 @@ with tab_gerador:
             st.warning("Carregue o histórico para calcular a Top Trinca.")
             grupo_padrao = list(GRUPOS_40.keys())[0]
             pool_40 = GRUPOS_40[grupo_padrao]
+
+    elif opcao_estrategia.startswith("🧠 Seleção Inteligente"):
+        st.info("💡 O sistema buscará os grupos com o maior **Atraso de Sena (6)** em relação à sua **Média Histórica**, indicando os grupos que estão 'devendo' um acerto.")
+        
+        df_auditoria = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_40)
+        
+        # Filtra grupos que estão com Atraso (6) maior que a própria Média (6)
+        grupos_devendo = df_auditoria[df_auditoria['Atraso (6)'] > df_auditoria['Média (6)']]
+        
+        # Se nenhum se encaixar, pega os que estão mais atrasados no momento
+        if grupos_devendo.empty:
+            grupos_devendo = df_auditoria.sort_values(by='Atraso (6)', ascending=False)
+            
+        top_3_devendo = grupos_devendo.head(3)['Grupo'].tolist()
+        
+        st.success(f"**Grupos Selecionados via Ciclos (Maior Atraso de Sena):** {', '.join(top_3_devendo)}")
+        
+        # Exibe uma tabela rápida com o porquê da escolha
+        st.dataframe(
+            df_auditoria[df_auditoria['Grupo'].isin(top_3_devendo)][
+                ['Grupo', 'Senas (6)', 'Atraso (6)', 'Maior Atraso (6)', 'Média (6)']
+            ], 
+            use_container_width=True, hide_index=True
+        )
+        
+        pool_40 = sorted(list(set(GRUPOS_40[top_3_devendo[0]] + GRUPOS_40[top_3_devendo[1]] + GRUPOS_40[top_3_devendo[2]])))
             
     else:
         grupo_padrao = list(GRUPOS_40.keys())[0]
@@ -720,3 +809,34 @@ with tab_trincas:
             st.info("Sem dados suficientes.")
     else:
         st.info("Nenhum dado histórico carregado para analisar trincas.")
+
+with tab_conferencia:
+    st.subheader(f"📋 Auditoria de Acertos — {opcao_matriz}")
+    st.info("Esta tabela simula o desempenho de cada grupo em todos os concursos carregados no período de análise selecionado.")
+    
+    if sorteios_historico:
+        df_conferencia = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_40)
+        
+        st.dataframe(
+            df_conferencia, 
+            use_container_width=True,
+            column_config={
+                "Pontos": st.column_config.NumberColumn(format="%d 🏆"),
+                "Média (6)": st.column_config.NumberColumn(format="%.1f"),
+                "Média (5)": st.column_config.NumberColumn(format="%.1f"),
+                "Média (4)": st.column_config.NumberColumn(format="%.1f")
+            }
+        )
+        
+        buffer_conf = io.BytesIO()
+        with pd.ExcelWriter(buffer_conf, engine='openpyxl') as writer:
+            df_conferencia.to_excel(writer, index=False, sheet_name='Auditoria_Grupos')
+        st.download_button(
+            label="📥 Baixar Auditoria Completa (.xlsx)",
+            data=buffer_conf.getvalue(),
+            file_name="auditoria_grupos_mega_sena.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_auditoria"
+        )
+    else:
+        st.warning("Carregue o histórico de concursos na barra lateral para gerar a auditoria.")
