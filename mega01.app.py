@@ -42,10 +42,6 @@ def verificar_autenticacao():
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
                 st.rerun()
-            elif usuario_input == "MEGA-SENA" and senha_input == "2026":
-                st.session_state.autenticado = True
-                st.session_state.usuario_atual = usuario_input
-                st.rerun()
             else:
                 st.error("Usuário ou senha incorretos!")
                 
@@ -147,7 +143,7 @@ opcao_matriz = st.sidebar.radio(
     ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)")
 )
 
-GRUPOS_40 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
+GRUPOS_ATIVOS = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
@@ -201,11 +197,8 @@ def carregar_dados():
             pass
     return carregar_dados_online()
 
-# --- FUNÇÃO DE MOMENTUM (INTELIGÊNCIA DE CICLOS E EXAUSTÃO) ---
+# --- FUNÇÃO DE MOMENTUM (REPRODUTÍVEL COM SEED) ---
 def calcular_momentum_inteligente(sorteios_recentes, janela_recente=30):
-    """
-    Calcula o Momentum considerando a Lei da Exaustão (Fadiga) e o Ponto de Virada.
-    """
     if not sorteios_recentes:
         return {d: 10.0 for d in range(1, 61)}
         
@@ -213,8 +206,6 @@ def calcular_momentum_inteligente(sorteios_recentes, janela_recente=30):
     ultima_aparicao = {d: -1 for d in range(1, 61)}
     
     total_sorteios = len(sorteios_recentes)
-    
-    # Analisa apenas a janela recente
     janela_inicio = max(0, total_sorteios - janela_recente)
     
     for idx, s in enumerate(sorteios_recentes):
@@ -225,85 +216,76 @@ def calcular_momentum_inteligente(sorteios_recentes, janela_recente=30):
                     freq_recente[d] += 1
                 
     pontuacao = {}
+    # Usa uma seed baseada no último concurso para que o fator sorte seja fixo por análise
+    seed_val = hash(tuple(sorteios_recentes[-1])) if sorteios_recentes else 42
+    rng = random.Random(seed_val)
+    
     for d in range(1, 61):
-        # 1. Força Base (Frequência na janela)
-        base_forca = freq_recente[d] * 15  # Cada aparição vale 15 pontos
-        
-        # 2. Fator Exaustão (Fadiga)
-        fadiga = 0
-        if freq_recente[d] == 5:
-            fadiga = -20
-        elif freq_recente[d] >= 6:
-            fadiga = -40
+        base_forca = freq_recente[d] * 15 
+        fadiga = -20 if freq_recente[d] == 5 else (-40 if freq_recente[d] >= 6 else 0)
             
-        # 3. Fator Ponto de Virada (Timing)
         atraso = (total_sorteios - 1) - ultima_aparicao[d]
         
         bonus_timing = 0
         if atraso == 0:
-            bonus_timing = 25  # Saiu no último jogo (Repetição imediata)
+            bonus_timing = 25  # Repetição imediata
         elif 4 <= atraso <= 7:
-            bonus_timing = 40  # Ponto de virada perfeito
+            bonus_timing = 40  # Ponto de virada
         elif atraso >= 15:
-            bonus_timing = -10 # Muito tempo sem sair
+            bonus_timing = -10 
             
-        # 4. Fator Sorte (Diversificação)
-        fator_sorte = random.random() * 5
-        
+        fator_sorte = rng.random() * 5
         pontuacao[d] = max(1.0, base_forca + fadiga + bonus_timing + fator_sorte)
         
     return pontuacao
 
-# --- FUNÇÃO DE PURIFICAÇÃO ESPACIAL ---
+# --- FUNÇÃO DE PURIFICAÇÃO COM BALANCEAMENTO REAL POR QUADRANTE ---
 def purificar_com_momentum(pool, pontuacao_momentum, n_desejado=24):
-    """
-    Purificação Espacial e de Momentum:
-    Garante que as 24 dezenas tenham uma distribuição equilibrada nos 4 quadrantes,
-    priorizando sempre as dezenas com maior pontuação de Momentum.
-    """
-    # 1. Ranqueia todo o pool pelo Momentum
     candidatos = sorted(pool, key=lambda d: pontuacao_momentum.get(d, 0), reverse=True)
+    por_q = {1: [], 2: [], 3: [], 4: []}
+    for d in candidatos:
+        por_q[get_quadrante(d)].append(d)
+
+    # Meta exata de 6 dezenas por quadrante (já que 24/4 = 6)
+    alvo_por_q = {q: n_desejado // 4 for q in range(1, 5)}
+    resto = n_desejado - sum(alvo_por_q.values())
     
-    # 2. Separa em quadrantes, mantendo a ordem de força (Momentum) dentro de cada um
-    q1 = [d for d in candidatos if get_quadrante(d) == 1]
-    q2 = [d for d in candidatos if get_quadrante(d) == 2]
-    q3 = [d for d in candidatos if get_quadrante(d) == 3]
-    q4 = [d for d in candidatos if get_quadrante(d) == 4]
-    
-    quadrantes = [q1, q2, q3, q4]
+    # Distribui o resto para os quadrantes com mais opções
+    for q in sorted(range(1, 5), key=lambda q: len(por_q[q]), reverse=True)[:resto]:
+        alvo_por_q[q] += 1
+
     selecionadas = []
-    
-    # 3. Pescaria Espacial (Tenta pegar 6 de cada quadrante)
-    idx = 0
-    while len(selecionadas) < n_desejado and any(quadrantes):
-        atual = quadrantes[idx % 4]
-        if atual:
-            selecionadas.append(atual.pop(0))
-        idx += 1
-        
-    # 4. Fallback (Se o pool for muito limitado, completa com as melhores que sobraram)
+    for q in range(1, 5):
+        selecionadas.extend(por_q[q][:alvo_por_q[q]])
+
+    # Fallback caso algum quadrante não tenha o suficiente no pool
     if len(selecionadas) < n_desejado:
-        for d in candidatos:
-            if d not in selecionadas:
-                selecionadas.append(d)
-            if len(selecionadas) == n_desejado:
-                break
-                
-    # 5. Ajuste Fino (Garante equilíbrio de Pares/Ímpares)
+        restantes = [d for d in candidatos if d not in selecionadas]
+        selecionadas.extend(restantes[:n_desejado - len(selecionadas)])
+
+    # Ajuste de paridade (corrige os dois lados: muitos pares ou muitos ímpares)
     pares = [d for d in selecionadas if d % 2 == 0]
     impares = [d for d in selecionadas if d % 2 != 0]
+    alvo_pares = n_desejado // 2
     
-    if len(pares) > 15:
+    if len(pares) > alvo_pares + 2:
         for d in candidatos:
             if d % 2 != 0 and d not in selecionadas:
                 pior_par = min(pares, key=lambda x: pontuacao_momentum.get(x, 0))
                 selecionadas.remove(pior_par)
                 selecionadas.append(d)
                 break
+    elif len(pares) < alvo_pares - 2:
+        for d in candidatos:
+            if d % 2 == 0 and d not in selecionadas:
+                pior_impar = min(impares, key=lambda x: pontuacao_momentum.get(x, 0))
+                selecionadas.remove(pior_impar)
+                selecionadas.append(d)
+                break
 
     return sorted(selecionadas)
 
-def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima=4, limite_max=50):
+def aplicar_diversificacao(comb_aprovadas, limite_max=50):
     if not comb_aprovadas: return []
     selecionados = []
     restantes = list(comb_aprovadas)
@@ -315,7 +297,7 @@ def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima
         novos_restantes = []
         for c in restantes:
             overlap = len(set_e.intersection(set(c)))
-            if overlap < garantia_minima:
+            if overlap < 4: # Evita clones
                 novos_restantes.append(c)
         restantes = novos_restantes
     return selecionados
@@ -373,34 +355,19 @@ def analisar_metricas_completas_grupos(sorteios, grupos_dict):
         
     return pd.DataFrame(rows)
 
-def ranquear_grupos_quentes(sorteios, grupos_dict):
-    if not sorteios or len(sorteios) < 5:
-        return pd.DataFrame([{'Grupo': k, 'Score': 0, 'Média Acertos': 0, '5+ Acertos': 0} for k in list(grupos_dict.keys())[:10]])
-    
-    scores = {}
+def ranquear_grupos_por_compatibilidade(dezenas_quentes, grupos_dict, n_dezenas_aposta):
+    q = set(dezenas_quentes)
+    rows = []
     for nome, dezenas in grupos_dict.items():
-        set_g = set(dezenas)
-        pontos = 0
-        acertos_list = []
-        for s in sorteios:
-            ac = len(set(s).intersection(set_g))
-            acertos_list.append(ac)
-            if ac == 6: pontos += 100
-            elif ac == 5: pontos += 50
-            elif ac == 4: pontos += 10
-            pontos += ac
-        scores[nome] = {
-            'pontos': pontos,
-            'media_acertos': round(np.mean(acertos_list), 2),
-            'quinas_senas': sum(1 for a in acertos_list if a >= 5)
-        }
-        
-    df_rank = pd.DataFrame([
-        {'Grupo': k, 'Score': v['pontos'], 'Média Acertos': v['media_acertos'], '5+ Acertos': v['quinas_senas']}
-        for k, v in scores.items()
-    ]).sort_values(by='Score', ascending=False)
-    
-    return df_rank
+        g = set(dezenas)
+        inter = g & q
+        rows.append({
+            "Grupo": nome,
+            "Dezenas Quentes no Grupo": len(inter),
+            "Cobertura da Aposta": round(len(inter) / max(n_dezenas_aposta, 1), 3),
+            "Score Compatibilidade": len(inter) * 10 + len(inter) / max(n_dezenas_aposta, 1),
+        })
+    return pd.DataFrame(rows).sort_values("Score Compatibilidade", ascending=False).reset_index(drop=True)
 
 def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     if not sorteios: return pd.DataFrame()
@@ -411,6 +378,7 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     for g1, g2, g3 in comb_trincas:
         todas_dezenas = grupos_dict[g1] + grupos_dict[g2] + grupos_dict[g3]
         contagem = Counter(todas_dezenas)
+        # Mantém as 40 mais frequentes da união dos 3 grupos
         pool_ordenado = sorted(contagem.keys(), key=lambda d: (contagem[d], d), reverse=True)
         pool_unificado = set(pool_ordenado[:40])
         
@@ -442,7 +410,6 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     )
     return df_trincas.head(top_n)
 
-# --- FUNÇÃO: CONFERÊNCIA DE ACERTOS ---
 def gerar_conferencia_acertos_grupos(sorteios, grupos_dict):
     if not sorteios:
         return pd.DataFrame()
@@ -607,28 +574,9 @@ max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 4, 2)
 min_quad = st.sidebar.slider("Mínimo Quadrantes", 1, 4, 3)
 max_repetidas = st.sidebar.slider("Máximo Repetidas", 0, 4, 2)
 
-st.sidebar.header("🛡️ Garantias Adicionais / Fechamento")
-ativar_garantia = st.sidebar.checkbox("Ativar Garantia Matemática Adicional", value=True)
-opcao_garantia = st.sidebar.selectbox(
-    "Nível de Garantia Exigida:",
-    [
-        "Quadra Garantida (Se acertar 4 nas 24)",
-        "Quina Garantida (Se acertar 5 nas 24)",
-        "Sena Garantida (Se acertar 6 nas 24)"
-    ],
-    index=0
-)
-
-st.sidebar.header("📌 Regra: Dezenas Fixas")
-usar_fixas = st.sidebar.checkbox("Ativar Dezenas Fixas Obrigatórias", value=False)
-dezenas_fixas_sel = []
-
-if usar_fixas:
-    dezenas_fixas_sel = st.sidebar.multiselect(
-        "Escolha 1 ou 2 dezenas fixas (1 a 60):",
-        options=list(range(1, 61)),
-        max_selections=2
-    )
+st.sidebar.header("🛡️ Diversificação de Jogos")
+ativar_diversificacao = st.sidebar.checkbox("Ativar Diversificação Matemática", value=True)
+st.sidebar.caption("Evita que os jogos gerados sejam clones entre si (baixa sobreposição).")
 
 qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
 
@@ -643,12 +591,13 @@ tab_gerador, tab_metricas, tab_trincas, tab_conferencia = st.tabs([
 ])
 
 with tab_gerador:
-    st.subheader("1. Estratégia de Seleção das Dezenas Base (Matriz Base (40 Grupos))")
+    # Correção 10: Subheader dinâmico
+    st.subheader(f"1. Estratégia de Seleção das Dezenas Base ({opcao_matriz})")
     
     opcao_estrategia = st.radio(
         "Selecione o Método de Escolha das Dezenas Base:",
         [
-            f"Top Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
+            f"Top Grupos (Compatibilidade com Dezenas Quentes)",
             f"Top Trinca Dinâmica (Ranking nos Últimos {len(sorteios_historico)} Concursos)",
             "🧠 Seleção Inteligente via Auditoria (Ciclos e Atrasos)",
             "Seleção Manual de Dezenas"
@@ -657,21 +606,26 @@ with tab_gerador:
     
     pool_40 = []
     
+    # Correção 1: Top Grupos agora usa Compatibilidade
     if opcao_estrategia.startswith("Top Grupos"):
-        df_rank = ranquear_grupos_quentes(sorteios_historico, GRUPOS_40)
-        top_10 = df_rank.head(10)
+        # Pega as top 24 dezenas (ou quantidade equivalente) com maior momentum
+        top_momento = sorted(momentum_scores.keys(), key=lambda d: momentum_scores[d], reverse=True)[:24]
         
-        st.markdown(f"**Top 10 Grupos Individuais nos Últimos {len(sorteios_historico)} Concursos:**")
-        st.dataframe(top_10[['Grupo', 'Score', 'Média Acertos', '5+ Acertos']], use_container_width=True)
+        df_comp = ranquear_grupos_por_compatibilidade(top_momento, GRUPOS_ATIVOS, 6)
         
-        top_3_nomes = top_10.head(3)['Grupo'].tolist()
-        st.success(f"**Grupos Selecionados Automaticamente (Top 3):** {', '.join(top_3_nomes)}")
-        pool_40 = sorted(list(set(GRUPOS_40[top_3_nomes[0]] + GRUPOS_40[top_3_nomes[1]] + GRUPOS_40[top_3_nomes[2]])))
+        st.markdown("**Top Grupos por Compatibilidade com as Dezenas Quentes:**")
+        st.dataframe(df_comp.head(5), use_container_width=True)
+        
+        grupo_escolhido = df_comp.iloc[0]['Grupo']
+        st.success(f"**Grupo Selecionado Automaticamente:** {grupo_escolhido} (maior cobertura)")
+        
+        # O pool agora tem EXATAMENTE as dezenas do grupo (40 dezenas), e não a união de 3 grupos
+        pool_40 = sorted(GRUPOS_ATIVOS[grupo_escolhido])
         
     elif opcao_estrategia.startswith("Top Trinca"):
-        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=5)
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_ATIVOS, top_n=5)
         if not df_top_trincas.empty:
-            st.markdown(f"**Top 5 Melhores Trincas dos Últimos {len(sorteios_historico)} Concursos:**")
+            st.markdown(f"**Top 5 Melhores Trincas (União Top 40) dos Últimos {len(sorteios_historico)} Concursos:**")
             st.dataframe(df_top_trincas.drop(columns=['Dezenas_Selecionadas']), use_container_width=True)
             
             trinca_escolhida = st.selectbox("Escolha uma das Top Trincas:", df_top_trincas['Trinca'].tolist())
@@ -679,13 +633,13 @@ with tab_gerador:
             pool_40 = row_trinca['Dezenas_Selecionadas']
         else:
             st.warning("Carregue o histórico para calcular a Top Trinca.")
-            grupo_padrao = list(GRUPOS_40.keys())[0]
-            pool_40 = GRUPOS_40[grupo_padrao]
+            grupo_padrao = list(GRUPOS_ATIVOS.keys())[0]
+            pool_40 = GRUPOS_ATIVOS[grupo_padrao]
 
     elif opcao_estrategia.startswith("🧠 Seleção Inteligente"):
         st.info("💡 O sistema buscará os grupos com o maior **Atraso de Sena (6)** em relação à sua **Média Histórica**, indicando os grupos que estão 'devendo' um acerto.")
         
-        df_auditoria = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_40)
+        df_auditoria = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_ATIVOS)
         
         grupos_devendo = df_auditoria[df_auditoria['Atraso (6)'] > df_auditoria['Média (6)']]
         
@@ -703,24 +657,24 @@ with tab_gerador:
             use_container_width=True, hide_index=True
         )
         
-        pool_40 = sorted(list(set(GRUPOS_40[top_3_devendo[0]] + GRUPOS_40[top_3_devendo[1]] + GRUPOS_40[top_3_devendo[2]])))
+        pool_40 = sorted(list(set(GRUPOS_ATIVOS[top_3_devendo[0]] + GRUPOS_ATIVOS[top_3_devendo[1]] + GRUPOS_ATIVOS[top_3_devendo[2]])))
             
     else:
-        grupo_padrao = list(GRUPOS_40.keys())[0]
-        pool_40 = st.multiselect("Selecione as dezenas base:", options=list(range(1, 61)), default=GRUPOS_40[grupo_padrao])
+        grupo_padrao = list(GRUPOS_ATIVOS.keys())[0]
+        pool_40 = st.multiselect("Selecione as dezenas base:", options=list(range(1, 61)), default=GRUPOS_ATIVOS[grupo_padrao])
 
     st.markdown("---")
     st.subheader("2. Purificação Multicritério (Base ➔ 24 Dezenas) + Momentum")
     
     if len(pool_40) >= 24:
-        # AQUI APLICAMOS O MOMENTUM INTELIGENTE E PURIFICAÇÃO ESPACIAL
+        # PURIFICAÇÃO BALANCEADA
         dezenas_24 = purificar_com_momentum(pool_40, momentum_scores, n_desejado=24)
         
         st.info(f"**Dezenas Purificadas pelo Momentum (24):** {dezenas_24}")
         
         with st.expander("🔎 Ver Score de Momentum das 24 Dezenas Selecionadas"):
             df_mom = pd.DataFrame([
-                {"Dezena": d, "Score Momentum": round(momentum_scores[d], 2)} 
+                {"Dezena": d, "Score Momentum": round(momentum_scores[d], 2), "Quadrante": get_quadrante(d)} 
                 for d in dezenas_24
             ]).sort_values(by="Score Momentum", ascending=False)
             st.dataframe(df_mom, use_container_width=True, hide_index=True)
@@ -730,10 +684,6 @@ with tab_gerador:
             aprovados = []
             
             for comb in comb_totais:
-                if usar_fixas and dezenas_fixas_sel:
-                    if not all(d in comb for d in dezenas_fixas_sel):
-                        continue
-
                 s = sum(comb)
                 if not (min_soma <= s <= max_soma): continue
                 if sum(1 for d in comb if d % 2 == 0) not in pares_aceitos: continue
@@ -756,31 +706,20 @@ with tab_gerador:
             st.success(f"**Combinações Que Passaram nos Filtros:** {len(aprovados):,}")
             
             if aprovados:
-                if ativar_garantia:
-                    if "Quadra" in opcao_garantia:
-                        n_garant = 4
-                    elif "Quina" in opcao_garantia:
-                        n_garant = 5
-                    else:
-                        n_garant = 6
-                    
-                    jogos_finais = aplicar_reducao_garantia(aprovados, garantia_minima=n_garant, limite_max=qtd_exportar)
-                    st.info(f"🛡️ **Garantia Adicional Aplicada:** Reduzido para os melhores {len(jogos_finais)} jogos cobrindo a garantia **{opcao_garantia}**.")
+                if ativar_diversificacao:
+                    jogos_finais = aplicar_diversificacao(aprovados, limite_max=qtd_exportar)
+                    st.info(f"🛡️ **Diversificação Aplicada:** Reduzido para os melhores {len(jogos_finais)} jogos evitando clones.")
                 else:
                     st.info("🏆 Aplicando Ranqueamento Estatístico para escolher os melhores jogos...")
                     
-                    # Pega as top 8 dezenas do momento (Ponto de virada e Repetição)
                     top_momentum_dezenas = sorted(dezenas_24, key=lambda d: momentum_scores[d], reverse=True)[:8]
                     
                     def calcular_peso_jogo(jogo):
                         peso = 0
-                        # Bônus por ter dezenas de repetição do último sorteio
                         peso += len(set(jogo).intersection(set(ultimo_sorteio))) * 50
-                        # Bônus por ter dezenas no Ponto de Virada
                         for d in jogo:
                             if d in top_momentum_dezenas:
                                 peso += 20
-                        # Bônus pela soma estar centralizada
                         meio_soma = (min_soma + max_soma) / 2
                         peso += max(0, 30 - abs(sum(jogo) - meio_soma))
                         return peso
@@ -852,7 +791,7 @@ with tab_gerador:
 with tab_metricas:
     st.subheader(f"📊 Desempenho e Cobertura — {opcao_matriz}")
     if sorteios_historico:
-        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, GRUPOS_40)
+        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, GRUPOS_ATIVOS)
         st.dataframe(df_metricas, use_container_width=True)
     else:
         st.info("Nenhum dado histórico carregado para exibir métricas.")
@@ -860,7 +799,7 @@ with tab_metricas:
 with tab_trincas:
     st.subheader("🔥 Top Trincas Dinâmicas de Grupos")
     if sorteios_historico:
-        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=15)
+        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_ATIVOS, top_n=15)
         if not df_trincas_tab.empty:
             st.dataframe(df_trincas_tab.drop(columns=['Dezenas_Selecionadas']), use_container_width=True)
         else:
@@ -873,7 +812,7 @@ with tab_conferencia:
     st.info("Esta tabela simula o desempenho de cada grupo em todos os concursos carregados no período de análise selecionado.")
     
     if sorteios_historico:
-        df_conferencia = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_40)
+        df_conferencia = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_ATIVOS)
         
         st.dataframe(
             df_conferencia, 
