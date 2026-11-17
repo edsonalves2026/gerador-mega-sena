@@ -201,62 +201,106 @@ def carregar_dados():
             pass
     return carregar_dados_online()
 
-# --- FUNÇÃO DE MOMENTUM (BASEADO NA SUA MACRO VBA) ---
-def calcular_momentum_dezenas(sorteios_recentes, janela_recente=25):
+# --- FUNÇÃO DE MOMENTUM (INTELIGÊNCIA DE CICLOS E EXAUSTÃO) ---
+def calcular_momentum_inteligente(sorteios_recentes, janela_recente=30):
+    """
+    Calcula o Momentum considerando a Lei da Exaustão (Fadiga) e o Ponto de Virada.
+    """
     if not sorteios_recentes:
-        return {d: 1.0 for d in range(1, 61)}
+        return {d: 10.0 for d in range(1, 61)}
         
     freq_recente = {d: 0 for d in range(1, 61)}
-    freq_total = {d: 0 for d in range(1, 61)}
-    ultima_aparicao = {d: 0 for d in range(1, 61)}
+    ultima_aparicao = {d: -1 for d in range(1, 61)}
     
     total_sorteios = len(sorteios_recentes)
-    ultimo_concurso_idx = total_sorteios
+    
+    # Analisa apenas a janela recente
+    janela_inicio = max(0, total_sorteios - janela_recente)
     
     for idx, s in enumerate(sorteios_recentes):
         for d in s:
             if 1 <= d <= 60:
-                freq_total[d] += 1
-                if idx >= total_sorteios - janela_recente:
-                    freq_recente[d] += 1
                 ultima_aparicao[d] = idx
+                if idx >= janela_inicio:
+                    freq_recente[d] += 1
                 
-    max_freq_recente = max(freq_recente.values()) if freq_recente else 1
-    max_freq_total = max(freq_total.values()) if freq_total else 1
-    
     pontuacao = {}
     for d in range(1, 61):
-        atraso = (ultimo_concurso_idx - ultima_aparicao[d]) - 1
-        if atraso < 0: atraso = 0
+        # 1. Força Base (Frequência na janela)
+        base_forca = freq_recente[d] * 15  # Cada aparição vale 15 pontos
         
-        bonus_radar = 15 if 2 <= atraso <= 4 else 0
+        # 2. Fator Exaustão (Fadiga)
+        fadiga = 0
+        if freq_recente[d] == 5:
+            fadiga = -20
+        elif freq_recente[d] >= 6:
+            fadiga = -40
+            
+        # 3. Fator Ponto de Virada (Timing)
+        atraso = (total_sorteios - 1) - ultima_aparicao[d]
         
-        score = ((freq_recente[d] / max_freq_recente) * 50) + \
-                ((freq_total[d] / max_freq_total) * 30) + \
-                bonus_radar + (random.random() * 5)
-                
-        pontuacao[d] = score
+        bonus_timing = 0
+        if atraso == 0:
+            bonus_timing = 25  # Saiu no último jogo (Repetição imediata)
+        elif 4 <= atraso <= 7:
+            bonus_timing = 40  # Ponto de virada perfeito
+        elif atraso >= 15:
+            bonus_timing = -10 # Muito tempo sem sair
+            
+        # 4. Fator Sorte (Diversificação)
+        fator_sorte = random.random() * 5
+        
+        pontuacao[d] = max(1.0, base_forca + fadiga + bonus_timing + fator_sorte)
         
     return pontuacao
 
-# --- FUNÇÃO DE PURIFICAÇÃO COM MOMENTUM ---
+# --- FUNÇÃO DE PURIFICAÇÃO ESPACIAL ---
 def purificar_com_momentum(pool, pontuacao_momentum, n_desejado=24):
+    """
+    Purificação Espacial e de Momentum:
+    Garante que as 24 dezenas tenham uma distribuição equilibrada nos 4 quadrantes,
+    priorizando sempre as dezenas com maior pontuação de Momentum.
+    """
+    # 1. Ranqueia todo o pool pelo Momentum
     candidatos = sorted(pool, key=lambda d: pontuacao_momentum.get(d, 0), reverse=True)
     
-    pares_moldura = [d for d in candidatos if d % 2 == 0 and d in MOLDURA]
-    impares_moldura = [d for d in candidatos if d % 2 != 0 and d in MOLDURA]
-    pares_miolo = [d for d in candidatos if d % 2 == 0 and d in MIOLO]
-    impares_miolo = [d for d in candidatos if d % 2 != 0 and d in MIOLO]
+    # 2. Separa em quadrantes, mantendo a ordem de força (Momentum) dentro de cada um
+    q1 = [d for d in candidatos if get_quadrante(d) == 1]
+    q2 = [d for d in candidatos if get_quadrante(d) == 2]
+    q3 = [d for d in candidatos if get_quadrante(d) == 3]
+    q4 = [d for d in candidatos if get_quadrante(d) == 4]
     
+    quadrantes = [q1, q2, q3, q4]
     selecionadas = []
-    listas = [pares_moldura, impares_moldura, pares_miolo, impares_miolo]
+    
+    # 3. Pescaria Espacial (Tenta pegar 6 de cada quadrante)
     idx = 0
-    while len(selecionadas) < n_desejado and any(listas):
-        target = listas[idx % 4]
-        if target:
-            selecionadas.append(target.pop(0))
+    while len(selecionadas) < n_desejado and any(quadrantes):
+        atual = quadrantes[idx % 4]
+        if atual:
+            selecionadas.append(atual.pop(0))
         idx += 1
         
+    # 4. Fallback (Se o pool for muito limitado, completa com as melhores que sobraram)
+    if len(selecionadas) < n_desejado:
+        for d in candidatos:
+            if d not in selecionadas:
+                selecionadas.append(d)
+            if len(selecionadas) == n_desejado:
+                break
+                
+    # 5. Ajuste Fino (Garante equilíbrio de Pares/Ímpares)
+    pares = [d for d in selecionadas if d % 2 == 0]
+    impares = [d for d in selecionadas if d % 2 != 0]
+    
+    if len(pares) > 15:
+        for d in candidatos:
+            if d % 2 != 0 and d not in selecionadas:
+                pior_par = min(pares, key=lambda x: pontuacao_momentum.get(x, 0))
+                selecionadas.remove(pior_par)
+                selecionadas.append(d)
+                break
+
     return sorted(selecionadas)
 
 def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima=4, limite_max=50):
@@ -398,7 +442,7 @@ def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
     )
     return df_trincas.head(top_n)
 
-# --- NOVA FUNÇÃO: CONFERÊNCIA DE ACERTOS (ESPELHO DA SUA PLANILHA) ---
+# --- FUNÇÃO: CONFERÊNCIA DE ACERTOS ---
 def gerar_conferencia_acertos_grupos(sorteios, grupos_dict):
     if not sorteios:
         return pd.DataFrame()
@@ -551,8 +595,8 @@ if sorteios_historico_completos:
 else:
     sorteios_historico = []
 
-# MOMENTUM CALCULADO AQUI
-momentum_scores = calcular_momentum_dezenas(sorteios_historico, janela_recente=25)
+# MOMENTUM INTELIGENTE CALCULADO AQUI
+momentum_scores = calcular_momentum_inteligente(sorteios_historico, janela_recente=30)
 
 # FILTROS ESTRUTURAIS
 st.sidebar.header("⚙️ Filtros Estruturais")
@@ -643,10 +687,8 @@ with tab_gerador:
         
         df_auditoria = gerar_conferencia_acertos_grupos(sorteios_historico, GRUPOS_40)
         
-        # Filtra grupos que estão com Atraso (6) maior que a própria Média (6)
         grupos_devendo = df_auditoria[df_auditoria['Atraso (6)'] > df_auditoria['Média (6)']]
         
-        # Se nenhum se encaixar, pega os que estão mais atrasados no momento
         if grupos_devendo.empty:
             grupos_devendo = df_auditoria.sort_values(by='Atraso (6)', ascending=False)
             
@@ -654,7 +696,6 @@ with tab_gerador:
         
         st.success(f"**Grupos Selecionados via Ciclos (Maior Atraso de Sena):** {', '.join(top_3_devendo)}")
         
-        # Exibe uma tabela rápida com o porquê da escolha
         st.dataframe(
             df_auditoria[df_auditoria['Grupo'].isin(top_3_devendo)][
                 ['Grupo', 'Senas (6)', 'Atraso (6)', 'Maior Atraso (6)', 'Média (6)']
@@ -672,12 +713,11 @@ with tab_gerador:
     st.subheader("2. Purificação Multicritério (Base ➔ 24 Dezenas) + Momentum")
     
     if len(pool_40) >= 24:
-        # AQUI APLICAMOS O MOMENTUM DA SUA MACRO
+        # AQUI APLICAMOS O MOMENTUM INTELIGENTE E PURIFICAÇÃO ESPACIAL
         dezenas_24 = purificar_com_momentum(pool_40, momentum_scores, n_desejado=24)
         
         st.info(f"**Dezenas Purificadas pelo Momentum (24):** {dezenas_24}")
         
-        # Mostrar tabela de transparência do Momentum
         with st.expander("🔎 Ver Score de Momentum das 24 Dezenas Selecionadas"):
             df_mom = pd.DataFrame([
                 {"Dezena": d, "Score Momentum": round(momentum_scores[d], 2)} 
@@ -727,7 +767,25 @@ with tab_gerador:
                     jogos_finais = aplicar_reducao_garantia(aprovados, garantia_minima=n_garant, limite_max=qtd_exportar)
                     st.info(f"🛡️ **Garantia Adicional Aplicada:** Reduzido para os melhores {len(jogos_finais)} jogos cobrindo a garantia **{opcao_garantia}**.")
                 else:
-                    random.shuffle(aprovados)
+                    st.info("🏆 Aplicando Ranqueamento Estatístico para escolher os melhores jogos...")
+                    
+                    # Pega as top 8 dezenas do momento (Ponto de virada e Repetição)
+                    top_momentum_dezenas = sorted(dezenas_24, key=lambda d: momentum_scores[d], reverse=True)[:8]
+                    
+                    def calcular_peso_jogo(jogo):
+                        peso = 0
+                        # Bônus por ter dezenas de repetição do último sorteio
+                        peso += len(set(jogo).intersection(set(ultimo_sorteio))) * 50
+                        # Bônus por ter dezenas no Ponto de Virada
+                        for d in jogo:
+                            if d in top_momentum_dezenas:
+                                peso += 20
+                        # Bônus pela soma estar centralizada
+                        meio_soma = (min_soma + max_soma) / 2
+                        peso += max(0, 30 - abs(sum(jogo) - meio_soma))
+                        return peso
+
+                    aprovados.sort(key=calcular_peso_jogo, reverse=True)
                     jogos_finais = aprovados[:qtd_exportar]
                 
                 jogos_exibicao = [sorted(list(j)) for j in jogos_finais]
