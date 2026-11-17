@@ -6,12 +6,17 @@ from itertools import combinations
 import io
 import os
 import random
+import requests
+from bs4 import BeautifulSoup
+import re
+from collections import Counter
+
+# Configuração da página web
+st.set_page_config(page_title="Gerador Mega-Sena", page_icon="🎲", layout="wide")
 
 # -----------------------------------------------------------------------------
-# CONFIGURAÇÃO E TELA DE LOGIN
+# 1. AUTENTICAÇÃO / TELA DE LOGIN
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Gerador Mega-Sena Profissional", page_icon="🎲", layout="wide")
-
 def verificar_autenticacao():
     if "autenticado" not in st.session_state:
         st.session_state.autenticado = False
@@ -50,7 +55,7 @@ if not verificar_autenticacao():
     st.stop()
 
 # -----------------------------------------------------------------------------
-# CONSTANTES E MATRIZES
+# CONSTANTES E ESTRUTURAS DAS MATRIZES DE GRUPOS DE 40 DEZENAS
 # -----------------------------------------------------------------------------
 MOLDURA = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 30, 31, 40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}
 MIOLO = set(range(1, 61)) - MOLDURA
@@ -83,7 +88,7 @@ MATRIZ_24_GRUPOS = {
 }
 
 MATRIZ_51_GRUPOS = {
-    "Grupo 01": [1, 3, 5, 6, 9, 12, 13, 14, 17, 18, 20, 21, 22, 23, 25, 26, 27, 28, 29, 30, 33, 35, 36, 37, 38, 39, 41, 43, 44, 45, 46, 47, 49, 50, 51, 53, 55, 56, 57, 60],
+     "Grupo 01": [1, 3, 5, 6, 9, 12, 13, 14, 17, 18, 20, 21, 22, 23, 25, 26, 27, 28, 29, 30, 33, 35, 36, 37, 38, 39, 41, 43, 44, 45, 46, 47, 49, 50, 51, 53, 55, 56, 57, 60],
     "Grupo 02": [1, 2, 5, 6, 7, 8, 9, 11, 14, 17, 18, 21, 22, 23, 25, 26, 27, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 50, 51, 52, 53, 54, 59, 60],
     "Grupo 03": [1, 2, 3, 5, 7, 8, 11, 12, 13, 14, 17, 18, 20, 21, 23, 25, 26, 27, 28, 29, 30, 33, 34, 36, 39, 40, 41, 42, 43, 44, 45, 46, 50, 52, 54, 55, 56, 57, 59, 60],
     "Grupo 04": [1, 2, 3, 6, 7, 8, 9, 11, 12, 13, 20, 21, 22, 23, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 40, 42, 43, 45, 46, 47, 49, 51, 52, 53, 54, 55, 56, 57, 59],
@@ -142,280 +147,576 @@ opcao_matriz = st.sidebar.radio(
     ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)")
 )
 
-GRUPOS_ATIVOS = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
+GRUPOS_40 = MATRIZ_51_GRUPOS if opcao_matriz == "Nova Matriz (51 Grupos)" else MATRIZ_24_GRUPOS
 
 # -----------------------------------------------------------------------------
-# FUNÇÕES AUXILIARES E OTIMIZAÇÃO DE FECHAMENTO
+# FUNÇÕES ESTRUTURAIS E ESTATÍSTICAS
 # -----------------------------------------------------------------------------
-def get_quadrante(dezena):
-    col = (dezena - 1) % 10
-    lin = (dezena - 1) // 10
-    if col < 5 and lin < 3: return 1
-    if col >= 5 and lin < 3: return 2
-    if col < 5 and lin >= 3: return 3
-    return 4
+def get_quadrante(d):
+    row = (d - 1) // 10
+    col = (d - 1) % 10
+    if row < 3 and col < 5: return 1
+    elif row < 3 and col >= 5: return 2
+    elif row >= 3 and col < 5: return 3
+    else: return 4
 
-def carregar_dados_historicos():
-    # Estrutura de simulação para validação rápida
-    np.random.seed(42)
-    sorteios = [sorted(random.sample(range(1, 61), 6)) for _ in range(100)]
-    return sorteios
+def extrair_sorteios_historicos(df):
+    if df is None or df.empty: return []
+    cols_dezenas = [c for c in df.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
+    if len(cols_dezenas) < 6: return []
+    return [list(map(int, row)) for row in df[cols_dezenas].values]
 
-def aplicar_reducao_garantia(jogos_filtrados, garantia_desejada, qtd_dezenas):
-    """
-    Algoritmo Guloso (Greedy Cover) otimizado para Fechamento / Redução por Garantia.
-    Garante acerto mínimo com o menor número possível de bilhetes.
-    """
-    if not jogos_filtrados:
-        return []
-    
-    jogos_sets = [set(j) for j in jogos_filtrados]
-    cobertos = set()
-    jogos_selecionados = []
-    
-    indices_restantes = list(range(len(jogos_filtrados)))
-    
-    while indices_restantes and len(cobertos) < len(jogos_filtrados):
-        melhor_idx = -1
-        melhor_cobertura = -1
-        
-        for idx in indices_restantes:
-            jogo_cand = jogos_sets[idx]
-            novos_cobertos = 0
-            for i in indices_restantes:
-                if i not in cobertos:
-                    if len(jogo_cand.intersection(jogos_sets[i])) >= garantia_desejada:
-                        novos_cobertos += 1
+@st.cache_data(ttl=3600)
+def carregar_dados_online():
+    url = "https://asloterias.com.br/lista-de-resultados-da-mega-sena"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            container = soup.find('div', class_='col-md-8')
+            if not container: return None
             
-            if novos_cobertos > melhor_cobertura:
-                melhor_cobertura = novos_cobertos
-                melhor_idx = idx
-        
-        if melhor_idx == -1 or melhor_cobertura == 0:
-            jogos_selecionados.append(jogos_filtrados[indices_restantes[0]])
-            break
+            texto_completo = container.get_text(separator='\n')
+            padrao = re.compile(r'(\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})\s+(\d{2})')
             
-        jogos_selecionados.append(jogos_filtrados[melhor_idx])
+            dados = []
+            for match in padrao.finditer(texto_completo):
+                conc, data, d1, d2, d3, d4, d5, d6 = match.groups()
+                dados.append([int(conc), data, int(d1), int(d2), int(d3), int(d4), int(d5), int(d6)])
+            
+            if dados:
+                df = pd.DataFrame(dados, columns=['concurso', 'data', 'Bola 1', 'Bola 2', 'Bola 3', 'Bola 4', 'Bola 5', 'Bola 6'])
+                return df.sort_values(by='concurso').reset_index(drop=True)
+    except Exception:
+        return None
+    return None
+
+def carregar_dados():
+    caminho_local = "mega_sena.xlsx"
+    if os.path.exists(caminho_local):
+        try:
+            return pd.read_excel(caminho_local)
+        except Exception:
+            pass
+    return carregar_dados_online()
+
+# --- NOVA FUNÇÃO: CÁLCULO DE MOMENTUM (BASEADO NO VBA) ---
+def calcular_momentum_dezenas(sorteios_recentes, janela_recente=25):
+    """
+    Calcula a pontuação de Momentum para cada dezena (1 a 60).
+    Replica a lógica da macro VBA:
+    - Frequência recente (janela de 25 concursos)
+    - Frequência total
+    - Atraso atual
+    - Bônus Radar (2 a 4 concursos de atraso)
+    - Fator sorte (Rnd)
+    """
+    if not sorteios_recentes:
+        return {d: 1.0 for d in range(1, 61)}
         
-        jogo_escolhido = jogos_sets[melhor_idx]
-        novos_cobertos_set = set()
-        for i in indices_restantes:
-            if len(jogo_escolhido.intersection(jogos_sets[i])) >= garantia_desejada:
-                novos_cobertos_set.add(i)
-                cobertos.add(i)
+    freq_recente = {d: 0 for d in range(1, 61)}
+    freq_total = {d: 0 for d in range(1, 61)}
+    ultima_aparicao = {d: 0 for d in range(1, 61)}
+    
+    total_sorteios = len(sorteios_recentes)
+    ultimo_concurso_idx = total_sorteios # O último concurso é o index mais alto
+    
+    for idx, s in enumerate(sorteios_recentes):
+        for d in s:
+            if 1 <= d <= 60:
+                freq_total[d] += 1
+                if idx >= total_sorteios - janela_recente:
+                    freq_recente[d] += 1
+                ultima_aparicao[d] = idx
                 
-        indices_restantes = [i for i in indices_restantes if i not in novos_cobertos_set]
+    max_freq_recente = max(freq_recente.values()) if freq_recente else 1
+    max_freq_total = max(freq_total.values()) if freq_total else 1
+    
+    pontuacao = {}
+    for d in range(1, 61):
+        atraso = (ultimo_concurso_idx - ultima_aparicao[d]) - 1
+        if atraso < 0: atraso = 0
         
-    return jogos_selecionados
+        # Bônus Radar (2 a 4 atrasos)
+        bonus_radar = 15 if 2 <= atraso <= 4 else 0
+        
+        # Cálculo do Score (Freq Rec * 50 + Freq Tot * 30 + Bônus + Rnd*5)
+        score = ((freq_recente[d] / max_freq_recente) * 50) + \
+                ((freq_total[d] / max_freq_total) * 30) + \
+                bonus_radar + (random.random() * 5)
+                
+        pontuacao[d] = score
+        
+    return pontuacao
 
-def ranquear_top_trincas_dinamicas(grupos_dict):
-    """Identifica as 24 dezenas mais coerentes filtrando pelas combinações internas da matriz selecionada"""
-    contagem = {}
-    for dezenas in grupos_dict.values():
-        for d in dezenas:
-            contagem[d] = contagem.get(d, 0) + 1
-    df_rank = pd.DataFrame(list(contagem.items()), columns=["Dezena", "Frequencia"]).sort_values(by="Frequencia", ascending=False)
-    dezenas_24 = df_rank.head(24)["Dezena"].tolist()
-    return sorted(dezenas_24), df_rank
-
-def formatar_txt_caixa(jogos):
+# --- NOVA FUNÇÃO: PURIFICAÇÃO USANDO MOMENTUM ---
+def purificar_com_momentum(pool, pontuacao_momentum, n_desejado=24):
     """
-    Formata as apostas no padrão texto (.txt) aceito para importação no Internet Banking / Loterias Caixa.
-    Dezenas ordenadas com 2 dígitos (01, 05, 12), separadas por espaço simples.
-    Uma aposta por linha.
+    Purifica o pool de dezenas usando a pontuação de Momentum,
+    mas mantendo o equilíbrio de Par/Ímpar e Moldura/Miolo.
     """
-    linhas = []
-    for jogo in jogos:
-        jogo_formatado = " ".join([f"{dezena:02d}" for dezena in sorted(jogo)])
-        linhas.append(jogo_formatado)
-    return "\n".join(linhas)
+    # Ordena o pool pela pontuação de momentum (maior para menor)
+    candidatos = sorted(pool, key=lambda d: pontuacao_momentum.get(d, 0), reverse=True)
+    
+    pares_moldura = [d for d in candidatos if d % 2 == 0 and d in MOLDURA]
+    impares_moldura = [d for d in candidatos if d % 2 != 0 and d in MOLDURA]
+    pares_miolo = [d for d in candidatos if d % 2 == 0 and d in MIOLO]
+    impares_miolo = [d for d in candidatos if d % 2 != 0 and d in MIOLO]
+    
+    selecionadas = []
+    listas = [pares_moldura, impares_moldura, pares_miolo, impares_miolo]
+    idx = 0
+    while len(selecionadas) < n_desejado and any(listas):
+        target = listas[idx % 4]
+        if target:
+            selecionadas.append(target.pop(0))
+        idx += 1
+        
+    return sorted(selecionadas)
+
+def aplicar_reducao_garantia(comb_aprovadas, acertos_condicao=4, garantia_minima=4, limite_max=50):
+    if not comb_aprovadas: return []
+    selecionados = []
+    restantes = list(comb_aprovadas)
+    random.shuffle(restantes)
+    while restantes and len(selecionados) < limite_max:
+        escolhido = restantes.pop(0)
+        selecionados.append(escolhido)
+        set_e = set(escolhido)
+        novos_restantes = []
+        for c in restantes:
+            overlap = len(set_e.intersection(set(c)))
+            if overlap < garantia_minima:
+                novos_restantes.append(c)
+        restantes = novos_restantes
+    return selecionados
+
+def analisar_metricas_completas_grupos(sorteios, grupos_dict):
+    if not sorteios: return pd.DataFrame()
+    total_sorteios = len(sorteios)
+    coberturas_sena = {nome: set() for nome in grupos_dict}
+    desempenho = {nome: {'Sena': 0, 'Quina': 0, 'Quadra': 0} for nome in grupos_dict}
+    atraso_sena = {nome: total_sorteios for nome in grupos_dict}
+    atraso_quina = {nome: total_sorteios for nome in grupos_dict}
+    
+    for idx_concurso, s in enumerate(sorteios):
+        set_s = set(s)
+        for nome, dezenas in grupos_dict.items():
+            set_g = set(dezenas)
+            acertos = len(set_s.intersection(set_g))
+            if acertos == 6:
+                coberturas_sena[nome].add(idx_concurso)
+                desempenho[nome]['Sena'] += 1
+                atraso_sena[nome] = 0
+            else:
+                atraso_sena[nome] += 1
+                
+            if acertos == 5:
+                desempenho[nome]['Quina'] += 1
+                atraso_quina[nome] = 0
+            else:
+                atraso_quina[nome] += 1
+                
+            if acertos == 4:
+                desempenho[nome]['Quadra'] += 1
+
+    rows = []
+    for nome, dezenas in grupos_dict.items():
+        cob_total = len(coberturas_sena[nome])
+        outros_grupos = set().union(*[coberturas_sena[g] for g in grupos_dict if g != nome])
+        cob_exclusiva = len(coberturas_sena[nome] - outros_grupos)
+        
+        set_g = set(dezenas)
+        outras_sobr = [len(set_g.intersection(set(grupos_dict[o]))) for o in grupos_dict if o != nome]
+        redundancia = np.mean(outras_sobr) if outras_sobr else 0
+        
+        rows.append({
+            "Grupo": nome,
+            "Cob. Total (Sena)": cob_total,
+            "Cob. Exclusiva": cob_exclusiva,
+            "Redundância Média": round(redundancia, 2),
+            "Senas (6)": desempenho[nome]['Sena'],
+            "Quinas (5)": desempenho[nome]['Quina'],
+            "Quadras (4)": desempenho[nome]['Quadra'],
+            "Atraso Sena": atraso_sena[nome],
+            "Atraso Quina": atraso_quina[nome]
+        })
+        
+    return pd.DataFrame(rows)
+
+def ranquear_grupos_quentes(sorteios, grupos_dict):
+    if not sorteios or len(sorteios) < 5:
+        return pd.DataFrame([{'Grupo': k, 'Score': 0, 'Média Acertos': 0, '5+ Acertos': 0} for k in list(grupos_dict.keys())[:10]])
+    
+    scores = {}
+    for nome, dezenas in grupos_dict.items():
+        set_g = set(dezenas)
+        pontos = 0
+        acertos_list = []
+        for s in sorteios:
+            ac = len(set(s).intersection(set_g))
+            acertos_list.append(ac)
+            if ac == 6: pontos += 100
+            elif ac == 5: pontos += 50
+            elif ac == 4: pontos += 10
+            pontos += ac
+        scores[nome] = {
+            'pontos': pontos,
+            'media_acertos': round(np.mean(acertos_list), 2),
+            'quinas_senas': sum(1 for a in acertos_list if a >= 5)
+        }
+        
+    df_rank = pd.DataFrame([
+        {'Grupo': k, 'Score': v['pontos'], 'Média Acertos': v['media_acertos'], '5+ Acertos': v['quinas_senas']}
+        for k, v in scores.items()
+    ]).sort_values(by='Score', ascending=False)
+    
+    return df_rank
+
+def ranquear_top_trincas_dinamicas(sorteios, grupos_dict, top_n=5):
+    if not sorteios: return pd.DataFrame()
+    nomes_grupos = list(grupos_dict.keys())
+    comb_trincas = list(combinations(nomes_grupos, 3))
+    resultados = []
+    
+    for g1, g2, g3 in comb_trincas:
+        # Conta frequencia das dezenas na trinca para priorizar as mais fortes
+        todas_dezenas = grupos_dict[g1] + grupos_dict[g2] + grupos_dict[g3]
+        contagem = Counter(todas_dezenas)
+        pool_ordenado = sorted(contagem.keys(), key=lambda d: (contagem[d], d), reverse=True)
+        pool_unificado = set(pool_ordenado[:40])
+        
+        senas, quinas, quadras = 0, 0, 0
+        soma_acertos = 0
+        
+        for s in sorteios:
+            ac = len(set(s).intersection(pool_unificado))
+            soma_acertos += ac
+            if ac == 6: senas += 1
+            elif ac == 5: quinas += 1
+            elif ac == 4: quadras += 1
+            
+        score = (senas * 1000000) + (quinas * 1000) + (quadras * 10) + soma_acertos
+        resultados.append({
+            'Trinca': f"{g1} + {g2} + {g3}",
+            'Grupos': [g1, g2, g3],
+            'Score': score,
+            'Senas (6)': senas,
+            'Quinas (5)': quinas,
+            'Quadras (4)': quadras,
+            'Qtd Dezenas Únicas': len(pool_unificado),
+            'Dezenas_Selecionadas': sorted(list(pool_unificado))
+        })
+        
+    df_trincas = pd.DataFrame(resultados).sort_values(
+        by=['Senas (6)', 'Quinas (5)', 'Quadras (4)', 'Score'], 
+        ascending=False
+    )
+    return df_trincas.head(top_n)
 
 # -----------------------------------------------------------------------------
-# INTERFACE PRINCIPAL - NAVEGAÇÃO
+# SEÇÃO DA BARRA LATERAL (MODO ONLINE/OFFLINE E MATRIZES)
 # -----------------------------------------------------------------------------
-tab_gerador, tab_metricas, tab_trincas = st.tabs([
-    "🎲 Gerador & Fechamento", 
-    "📊 Métricas & Estatísticas", 
-    "🔮 Análise de Trincas / Grupos"
-])
+st.sidebar.header("📁 Base Histórica")
 
-# -----------------------------------------------------------------------------
-# TAB 1: GERADOR DE JOGOS E FECHAMENTO
-# -----------------------------------------------------------------------------
+modo_operacao = st.sidebar.radio(
+    "Modo de Operação:",
+    ["🌐 Conectado Online", "📂 Modo Offline (Planilha Excel)"],
+    index=0
+)
+
+df_historico = None
+
+if modo_operacao == "🌐 Conectado Online":
+    df_historico = carregar_dados()
+    if df_historico is not None and not df_historico.empty:
+        st.sidebar.success("🌐 Conectado online (`asloterias`)")
+    else:
+        st.sidebar.warning("Não foi possível carregar online. Tente o modo offline.")
+else:
+    uploaded_file = st.sidebar.file_uploader("Upload manual da planilha", type=["csv", "xlsx"])
+    if uploaded_file is not None:
+        try:
+            df_historico = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+            st.sidebar.success("Base carregada via Upload!")
+        except Exception as e:
+            st.sidebar.error(f"Erro no upload: {e}")
+    else:
+            st.sidebar.info("Carregue uma planilha Excel ou CSV para iniciar no modo offline.")
+
+sorteios_historico_completos_bruto = extrair_sorteios_historicos(df_historico) if df_historico is not None and not df_historico.empty else []
+
+if df_historico is not None and not df_historico.empty and sorteios_historico_completos_bruto:
+    lista_concursos_disponiveis = []
+    for idx_c, _ in enumerate(sorteios_historico_completos_bruto):
+        conc_num = df_historico.iloc[idx_c].get('concurso', idx_c + 1)
+        data_conc = df_historico.iloc[idx_c].get('data', '')
+        label_c = f"Concurso #{conc_num}" + (f" ({data_conc})" if data_conc else "")
+        lista_concursos_disponiveis.append((conc_num, idx_c, label_c))
+    
+    labels_opcoes = [item[2] for item in lista_concursos_disponiveis]
+    escolha_concurso_str = st.sidebar.selectbox(
+        "🎯 Definir Concurso de Referência (Corte):",
+        options=labels_opcoes,
+        index=len(labels_opcoes) - 1
+    )
+    
+    indice_selecionado = next(item[1] for item in lista_concursos_disponiveis if item[2] == escolha_concurso_str)
+    sorteios_historico_completos = sorteios_historico_completos_bruto[:indice_selecionado + 1]
+    
+    ultimo_registro = df_historico.iloc[indice_selecionado]
+    conc_num = ultimo_registro.get('concurso', 'N/A')
+    data_conc = ultimo_registro.get('data', '')
+    data_str = f" ({data_conc})" if data_conc else ""
+    
+    cols_dezenas = [c for c in df_historico.columns if any(t in str(c).lower() for t in ['bola', 'dezena', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6']) and 'data' not in str(c).lower()][:6]
+    
+    if len(cols_dezenas) == 6:
+        dezenas_ultimo = [f"{int(ultimo_registro[c]):02d}" for c in cols_dezenas]
+        dezenas_texto = " - ".join(dezenas_ultimo)
+        st.sidebar.info(
+            f"📌 **Concurso Referência:** #{conc_num}{data_str}\n\n"
+            f"🎯 **Dezenas:** `{dezenas_texto}`"
+        )
+    else:
+        st.sidebar.info(f"📌 **Concurso Referência:** #{conc_num}{data_str}")
+else:
+    sorteios_historico_completos = []
+
+ultimo_sorteio = sorteios_historico_completos[-1] if sorteios_historico_completos else []
+
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Escopo da Análise")
+if sorteios_historico_completos:
+    max_c = len(sorteios_historico_completos)
+    qtd_janela = st.sidebar.number_input("Últimos Concursos para Análise de Grupos:", min_value=10, max_value=max_c, value=min(100, max_c), step=10)
+    sorteios_historico = sorteios_historico_completos[-qtd_janela:]
+    st.sidebar.caption(f"Analisando últimos **{len(sorteios_historico)}** concursos.")
+else:
+    sorteios_historico = []
+
+# MOMENTUM CALCULADO AQUI (Baseado na sua macro VBA)
+# Usamos os últimos 25 concursos para a janela recente, conforme o VBA.
+momentum_scores = calcular_momentum_dezenas(sorteios_historico, janela_recente=25)
+
+# FILTROS ESTRUTURAIS
+st.sidebar.header("⚙️ Filtros Estruturais")
+min_soma, max_soma = st.sidebar.slider("Soma Central", 100, 300, (160, 210)) # Ajustado para padrão da macro
+pares_aceitos = st.sidebar.multiselect("Pares Aceitos", [0, 1, 2, 3, 4, 5, 6], default=[2, 3, 4])
+moldura_aceita = st.sidebar.multiselect("Moldura Aceita", [0, 1, 2, 3, 4, 5, 6], default=[3, 4])
+max_seq = st.sidebar.slider("Máximo Consecutivos", 1, 4, 2)
+min_quad = st.sidebar.slider("Mínimo Quadrantes", 1, 4, 3)
+max_repetidas = st.sidebar.slider("Máximo Repetidas", 0, 4, 2)
+
+st.sidebar.header("🛡️ Garantias Adicionais / Fechamento")
+ativar_garantia = st.sidebar.checkbox("Ativar Garantia Matemática Adicional", value=True)
+opcao_garantia = st.sidebar.selectbox(
+    "Nível de Garantia Exigida:",
+    [
+        "Quadra Garantida (Se acertar 4 nas 24)",
+        "Quina Garantida (Se acertar 5 nas 24)",
+        "Sena Garantida (Se acertar 6 nas 24)"
+    ],
+    index=0
+)
+
+st.sidebar.header("📌 Regra: Dezenas Fixas")
+usar_fixas = st.sidebar.checkbox("Ativar Dezenas Fixas Obrigatórias", value=False)
+dezenas_fixas_sel = []
+
+if usar_fixas:
+    dezenas_fixas_sel = st.sidebar.multiselect(
+        "Escolha 1 ou 2 dezenas fixas (1 a 60):",
+        options=list(range(1, 61)),
+        max_selections=2
+    )
+
+qtd_exportar = st.sidebar.number_input("Qtd de Jogos Gerados", min_value=10, max_value=1000, value=50, step=10)
+
+tab_gerador, tab_metricas, tab_trincas = st.tabs(["🚀 Gerador & Recalibragem", f"📊 Métricas dos Grupos ({opcao_matriz})", "🔥 Top Trincas Dinâmicas"])
+
 with tab_gerador:
-    st.header("Gerador Inteligente & Redução por Garantia")
+    st.subheader("1. Estratégia de Seleção das Dezenas Base (Matriz Base (40 Grupos))")
     
-    col_par1, col_par2 = st.columns([1, 1])
+    opcao_estrategia = st.radio(
+        "Selecione o Método de Escolha das Dezenas Base:",
+        [
+            f"Top Grupos Individuais Quentes (Últimos {len(sorteios_historico)} Concursos)",
+            f"Top Trinca Dinâmica (Ranking nos Últimos {len(sorteios_historico)} Concursos)",
+            "Seleção Manual de Dezenas"
+        ]
+    )
     
-    with col_par1:
-        st.subheader("1. Configurações Básicas")
-        qtd_dezenas_aposta = st.slider("Dezenas por bilhete:", min_value=6, max_value=15, value=6)
+    pool_40 = []
+    
+    if opcao_estrategia.startswith("Top Grupos"):
+        df_rank = ranquear_grupos_quentes(sorteios_historico, GRUPOS_40)
+        top_10 = df_rank.head(10)
         
-        dezenas_24_base, df_freq = ranquear_top_trincas_dinamicas(GRUPOS_ATIVOS)
+        st.markdown(f"**Top 10 Grupos Individuais nos Últimos {len(sorteios_historico)} Concursos:**")
+        st.dataframe(top_10[['Grupo', 'Score', 'Média Acertos', '5+ Acertos']], use_container_width=True)
         
-        usar_pool_custom = st.checkbox("Customizar o Pool de 24 Dezenas Base", value=False)
-        if usar_pool_custom:
-            dezenas_24 = st.multiselect("Selecione exatamente 24 dezenas:", options=list(range(1, 61)), default=dezenas_24_base)
-            if len(dezenas_24) < 24:
-                st.warning(f"Selecione mais {24 - len(dezenas_24)} dezenas para completar o pool de 24.")
+        top_3_nomes = top_10.head(3)['Grupo'].tolist()
+        st.success(f"**Grupos Selecionados Automaticamente (Top 3):** {', '.join(top_3_nomes)}")
+        pool_40 = sorted(list(set(GRUPOS_40[top_3_nomes[0]] + GRUPOS_40[top_3_nomes[1]] + GRUPOS_40[top_3_nomes[2]])))
+        
+    elif opcao_estrategia.startswith("Top Trinca"):
+        df_top_trincas = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=5)
+        if not df_top_trincas.empty:
+            st.markdown(f"**Top 5 Melhores Trincas dos Últimos {len(sorteios_historico)} Concursos:**")
+            st.dataframe(df_top_trincas.drop(columns=['Dezenas_Selecionadas']), use_container_width=True)
+            
+            trinca_escolhida = st.selectbox("Escolha uma das Top Trincas:", df_top_trincas['Trinca'].tolist())
+            row_trinca = df_top_trincas[df_top_trincas['Trinca'] == trinca_escolhida].iloc[0]
+            pool_40 = row_trinca['Dezenas_Selecionadas']
         else:
-            dezenas_24 = dezenas_24_base
-
-        usar_fixas = st.checkbox("Fixar Dezenas Específicas", value=False)
-        dezenas_fixas_sel = []
-        if usar_fixas:
-            dezenas_fixas_sel = st.multiselect("Dezenas Fixas (presentes em todos os jogos):", options=dezenas_24)
-
-    with col_par2:
-        st.subheader("2. Filtros Estatísticos Profissionais")
-        min_soma, max_soma = st.slider("Faixa da Soma Total das Dezenas:", 100, 300, (140, 220))
-        pares_aceitos = st.multiselect("Quantidade de Pares:", options=list(range(0, 16)), default=[2, 3, 4])
-        moldura_aceita = st.multiselect("Quantidade na Moldura:", options=list(range(0, 16)), default=[3, 4, 5])
-        max_seq = st.slider("Tamanho Máximo de Sequência Sequencial (Ex: 12-13-14):", 1, 5, 2)
-        min_quad = st.slider("Mínimo de Quadrantes Presentes:", 1, 4, 3)
-        
-        sorteios_hist = carregar_dados_historicos()
-        ultimo_sorteio = sorteios_hist[-1] if sorteios_hist else []
-        max_repetidas = st.slider("Máximo de Dezenas Repetidas do Último Sorteio:", 0, 6, 2)
+            st.warning("Carregue o histórico para calcular a Top Trinca.")
+            grupo_padrao = list(GRUPOS_40.keys())[0]
+            pool_40 = GRUPOS_40[grupo_padrao]
+            
+    else:
+        grupo_padrao = list(GRUPOS_40.keys())[0]
+        pool_40 = st.multiselect("Selecione as dezenas base:", options=list(range(1, 61)), default=GRUPOS_40[grupo_padrao])
 
     st.markdown("---")
-    st.subheader("3. Estratégia de Fechamento / Redução")
-    col_f1, col_f2 = st.columns(2)
+    st.subheader("2. Purificação Multicritério (Base ➔ 24 Dezenas) + Momentum")
     
-    with col_f1:
-        aplicar_fechamento = st.checkbox("Ativar Fechamento Matemático (Redução)", value=False)
-    with col_f2:
-        if aplicar_fechamento:
-            garantia_sel = st.selectbox(
-                "Garantia Pretendida (Se acertar as dezenas no pool de 24):",
-                options=[4, 5, 6],
-                format_func=lambda x: "Garantia de Quadra (4 acertos)" if x == 4 else ("Garantia de Quina (5 acertos)" if x == 5 else "Garantia de Sena (6 acertos)")
-            )
-        else:
-            garantia_sel = 6
-
-    if st.button("🚀 Processar e Gerar Jogos", type="primary", use_container_width=True):
-        if len(dezenas_24) < qtd_dezenas_aposta:
-            st.error(f"O pool de dezenas ({len(dezenas_24)}) deve ser maior ou igual à quantidade por aposta ({qtd_dezenas_aposta}).")
-        else:
+    if len(pool_40) >= 24:
+        # AQUI APLICAMOS O MOMENTUM DA SUA MACRO
+        dezenas_24 = purificar_com_momentum(pool_40, momentum_scores, n_desejado=24)
+        
+        st.info(f"**Dezenas Purificadas pelo Momentum (24):** {dezenas_24}")
+        
+        # Mostrar tabela de transparência do Momentum
+        with st.expander("🔎 Ver Score de Momentum das 24 Dezenas Selecionadas"):
+            df_mom = pd.DataFrame([
+                {"Dezena": d, "Score Momentum": round(momentum_scores[d], 2)} 
+                for d in dezenas_24
+            ]).sort_values(by="Score Momentum", ascending=False)
+            st.dataframe(df_mom, use_container_width=True, hide_index=True)
+        
+        if st.button("⚡ Executar Filtros Gaussiano & Gerar Apostas Diversificadas", type="primary"):
+            comb_totais = list(combinations(dezenas_24, 6))
             aprovados = []
-            limite_seguranca = 300000
-            contagem_avaliados = 0
             
-            with st.spinner("Filtrando combinações estatísticas..."):
-                for comb in combinations(sorted(dezenas_24), qtd_dezenas_aposta):
-                    contagem_avaliados += 1
-                    if contagem_avaliados > limite_seguranca:
-                        st.warning("Limite máximo de segurança para avaliação em tempo real atingido. Prosseguindo com os jogos já processados.")
-                        break
+            for comb in comb_totais:
+                if usar_fixas and dezenas_fixas_sel:
+                    if not all(d in comb for d in dezenas_fixas_sel):
+                        continue
 
-                    if usar_fixas and dezenas_fixas_sel:
-                        if not all(d in comb for d in dezenas_fixas_sel):
-                            continue
-
-                    s = sum(comb)
-                    if not (min_soma <= s <= max_soma): continue
-                    if sum(1 for d in comb if d % 2 == 0) not in pares_aceitos: continue
-                    if sum(1 for d in comb if d in MOLDURA) not in moldura_aceita: continue
-                    
-                    seq, m_seq = 1, 1
-                    for i in range(len(comb)-1):
-                        if comb[i+1] == comb[i] + 1:
-                            seq += 1
-                            m_seq = max(m_seq, seq)
-                        else:
-                            seq = 1
-                    if m_seq > max_seq: continue
-                    
-                    if len(set(get_quadrante(d) for d in comb)) < min_quad: continue
-                    if ultimo_sorteio and sum(1 for d in comb if d in ultimo_sorteio) > max_repetidas: continue
-                    
-                    aprovados.append(comb)
-            
-            if not aprovados:
-                st.error("Nenhuma combinação atendeu a todos os filtros selecionados. Tente flexibilizar as regras.")
-            else:
-                st.info(f"Combinações válidas encontradas pelos filtros: **{len(aprovados)}**")
+                s = sum(comb)
+                if not (min_soma <= s <= max_soma): continue
+                if sum(1 for d in comb if d % 2 == 0) not in pares_aceitos: continue
+                if sum(1 for d in comb if d in MOLDURA) not in moldura_aceita: continue
                 
-                if aplicar_fechamento and len(aprovados) > 1:
-                    with st.spinner("Aplicando matriz de fechamento otimizada..."):
-                        jogos_finais = aplicar_reducao_garantia(aprovados, garantia_sel, qtd_dezenas_aposta)
-                    st.success(f"Fechamento reduzido com sucesso! De **{len(aprovados)}** para apenas **{len(jogos_finais)}** bilhetes otimizados.")
+                c_s = sorted(comb)
+                seq, m_seq = 1, 1
+                for i in range(len(c_s)-1):
+                    if c_s[i+1] == c_s[i] + 1:
+                        seq += 1
+                        m_seq = max(m_seq, seq)
+                    else: seq = 1
+                if m_seq > max_seq: continue
+                
+                if len(set(get_quadrante(d) for d in comb)) < min_quad: continue
+                if ultimo_sorteio and sum(1 for d in comb if d in ultimo_sorteio) > max_repetidas: continue
+                
+                aprovados.append(comb)
+                
+            st.success(f"**Combinações Que Passaram nos Filtros:** {len(aprovados):,}")
+            
+            if aprovados:
+                if ativar_garantia:
+                    if "Quadra" in opcao_garantia:
+                        n_garant = 4
+                    elif "Quina" in opcao_garantia:
+                        n_garant = 5
+                    else:
+                        n_garant = 6
+                    
+                    jogos_finais = aplicar_reducao_garantia(aprovados, garantia_minima=n_garant, limite_max=qtd_exportar)
+                    st.info(f"🛡️ **Garantia Adicional Aplicada:** Reduzido para os melhores {len(jogos_finais)} jogos cobrindo a garantia **{opcao_garantia}**.")
                 else:
-                    jogos_finais = aprovados
-
-                st.session_state['jogos_gerados_atuais'] = jogos_finais
+                    random.shuffle(aprovados)
+                    jogos_finais = aprovados[:qtd_exportar]
                 
-                # Exibição dos Jogos na Interface
-                df_jogos = pd.DataFrame(jogos_finais, columns=[f"D{i+1}" for i in range(qtd_dezenas_aposta)])
+                jogos_exibicao = [sorted(list(j)) for j in jogos_finais]
+                
+                df_jogos = pd.DataFrame(jogos_exibicao, columns=[f"Bola {i+1}" for i in range(6)])
+                df_jogos.index = df_jogos.index + 1
+                
+                st.session_state['jogos_gerados_atuais'] = jogos_exibicao
                 st.dataframe(df_jogos, use_container_width=True)
                 
-                # Botões de Exportação (CSV e TXT Caixa)
-                col_exp1, col_exp2 = st.columns(2)
-                
-                with col_exp1:
-                    buffer_csv = df_jogos.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Baixar Jogos em CSV (Excel)",
-                        data=buffer_csv,
-                        file_name="jogos_megasena.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                    
-                with col_exp2:
-                    conteudo_txt = formatar_txt_caixa(jogos_finais)
-                    st.download_button(
-                        label="📄 Baixar TXT (Padrão Loterias Caixa)",
-                        data=conteudo_txt,
-                        file_name="jogos_megasena_caixa.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
-
-# -----------------------------------------------------------------------------
-# TAB 2: MÉTRICAS E CONFERÊNCIA HISTÓRICA
-# -----------------------------------------------------------------------------
-with tab_metricas:
-    st.header("Métricas do Pool & Conferência Histórica")
-    
-    if 'jogos_gerados_atuais' not in st.session_state:
-        st.info("Gere uma cartela de jogos na aba 'Gerador & Fechamento' para visualizar os relatórios estatísticos.")
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_jogos.to_excel(writer, sheet_name='Jogos_Filtrados', index_label='Jogo')
+                st.download_button(
+                    "📥 Baixar Planilha (.xlsx)", 
+                    data=buffer.getvalue(), 
+                    file_name="jogos_mega_sena.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
     else:
-        jogos = st.session_state['jogos_gerados_atuais']
-        st.metric(label="Total de Jogos Prontos", value=len(jogos))
-        
-        if st.button("📊 Conferir Desempenho com Histórico Simulado"):
-            sorteios = carregar_dados_historicos()
-            
-            quadras, quinas, senas = 0, 0, 0
-            
-            with st.spinner("Conferindo bilhetes contra os sorteios..."):
-                jogos_sets = [set(j) for j in jogos]
-                for s in sorteios:
-                    set_s = set(s)
-                    for j in jogos_sets:
-                        acertos = len(j.intersection(set_s))
-                        if acertos == 4: quadras += 1
-                        elif acertos == 5: quinas += 1
-                        elif acertos >= 6: senas += 1
-            
-            col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.metric("Quadras Simuladas", quadras)
-            col_m2.metric("Quinas Simuladas", quinas)
-            col_m3.metric("Senas Simuladas", senas)
+        st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
 
-# -----------------------------------------------------------------------------
-# TAB 3: ANÁLISE DE GRUPOS E TRINCAS
-# -----------------------------------------------------------------------------
+    # CONFERÊNCIA HISTÓRICA DOS JOGOS GERADOS
+    if 'jogos_gerados_atuais' in st.session_state and st.session_state['jogos_gerados_atuais']:
+        st.markdown("---")
+        st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
+        
+        if st.button("🔎 Verificar Premiações no Histórico Completo"):
+            premiacoes_encontradas = []
+            
+            for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
+                set_jogo = set(jogo)
+                
+                for idx_conc, sorteio in enumerate(sorteios_historico_completos):
+                    set_sorteio = set(sorteio)
+                    acertos = len(set_jogo.intersection(set_sorteio))
+                    
+                    if acertos >= 4:
+                        conc_num = df_historico.iloc[idx_conc].get('concurso', idx_conc + 1) if df_historico is not None else idx_conc + 1
+                        
+                        if acertos == 6:
+                            tipo = "Sena (6 acertos)"
+                        elif acertos == 5:
+                            tipo = "Quina (5 acertos)"
+                        else:
+                            tipo = "Quadra (4 acertos)"
+                            
+                        premiacoes_encontradas.append({
+                            "Jogo Gerado Nº": idx_jogo,
+                            "Dezenas do Jogo": ", ".join(f"{d:02d}" for d in sorted(jogo)),
+                            "Tipo de Prêmio": tipo,
+                            "Concurso": conc_num,
+                            "Dezenas Sorteadas": ", ".join(f"{d:02d}" for d in sorted(sorteio))
+                        })
+
+            if premiacoes_encontradas:
+                df_premios = pd.DataFrame(premiacoes_encontradas)
+                df_premios.index = df_premios.index + 1
+                st.success(f"🎉 Foram encontradas **{len(premiacoes_encontradas)}** ocorrências de premiações históricas para os jogos gerados!")
+                st.dataframe(df_premios, use_container_width=True)
+            else:
+                st.info("ℹ️ Nenhum dos jogos gerados nesta rodada obteve 4, 5 ou 6 acertos no histórico consultado.")
+
+with tab_metricas:
+    st.subheader(f"📊 Desempenho e Cobertura — {opcao_matriz}")
+    if sorteios_historico:
+        df_metricas = analisar_metricas_completas_grupos(sorteios_historico, GRUPOS_40)
+        st.dataframe(df_metricas, use_container_width=True)
+    else:
+        st.info("Nenhum dado histórico carregado para exibir métricas.")
+
 with tab_trincas:
-    st.header("Análise Estrutural da Matriz")
-    st.write(f"Analisando matriz selecionada no menu lateral: **{opcao_matriz}**")
-    
-    dezenas_top, df_ranking = ranquear_top_trincas_dinamicas(GRUPOS_ATIVOS)
-    
-    st.subheader("Frequência de Dezenas na Matriz Ativa")
-    st.dataframe(df_ranking.T, use_container_width=True)
-    
-    st.subheader("Pool de 24 Dezenas Recomendado")
-    st.write(dezenas_top)
+    st.subheader("🔥 Top Trincas Dinâmicas de Grupos")
+    if sorteios_historico:
+        df_trincas_tab = ranquear_top_trincas_dinamicas(sorteios_historico, GRUPOS_40, top_n=15)
+        if not df_trincas_tab.empty:
+            st.dataframe(df_trincas_tab.drop(columns=['Dezenas_Selecionadas']), use_container_width=True)
+        else:
+            st.info("Sem dados suficientes.")
+    else:
+        st.info("Nenhum dado histórico carregado para analisar trincas.")
