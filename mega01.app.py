@@ -42,6 +42,11 @@ def verificar_autenticacao():
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
                 st.rerun()
+            # ADICIONE ESTAS DUAS LINHAS ABAIXO PARA VOLTAR A ENTRAR COM MEGA-SENA/2026
+            elif usuario_input == "MEGA-SENA" and senha_input == "2026":
+                st.session_state.autenticado = True
+                st.session_state.usuario_atual = usuario_input
+                st.rerun()
             else:
                 st.error("Usuário ou senha incorretos!")
                 
