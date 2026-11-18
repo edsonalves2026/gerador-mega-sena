@@ -42,7 +42,7 @@ def verificar_autenticacao():
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
                 st.rerun()
-            # ADICIONE ESTA LINHA PARA VOLTAR A ENTRAR COM MEGA-SENA/2026
+            # Mantido o Backdoor de segurança para não travar o acesso do dono
             elif usuario_input == "MEGA-SENA" and senha_input == "2026":
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
@@ -185,8 +185,7 @@ MATRIZ_34_GRUPOS = {
 st.sidebar.header("📐 Matriz de Referência")
 opcao_matriz = st.sidebar.radio(
     "Selecione a Matriz para Análise:",
-    ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)", "Matriz Extra (34 Grupos)"
-    ),
+    ("Matriz Principal (24 Grupos)", "Nova Matriz (51 Grupos)", "Matriz Extra (34 Grupos)"),
     key="matriz_radio"
 )
 
@@ -603,6 +602,73 @@ def gerar_conferencia_acertos_grupos(sorteios, grupos_dict):
         })
     return pd.DataFrame(resultados).sort_values(by="Pontos", ascending=False).reset_index(drop=True)
 
+def gerar_diagnostico_integrado(sorteios, momentum_scores):
+    if not sorteios:
+        return pd.DataFrame()
+        
+    total_sorteios = len(sorteios)
+    freq_recente = {d: 0 for d in range(1, 61)}
+    ultima_aparicao = {d: -1 for d in range(1, 61)}
+    janela_recente = 30
+    janela_inicio = max(0, total_sorteios - janela_recente)
+    
+    for idx, s in enumerate(sorteios):
+        for d in s:
+            if 1 <= d <= 60:
+                ultima_aparicao[d] = idx
+                if idx >= janela_inicio:
+                    freq_recente[d] += 1
+                    
+    dados = []
+    for d in range(1, 61):
+        atraso = (total_sorteios - 1) - ultima_aparicao[d]
+        score = momentum_scores.get(d, 1.0)
+        
+        if freq_recente[d] >= 5:
+            status = "Super Quente"
+        elif freq_recente[d] >= 2:
+            status = "Estável"
+        else:
+            status = "Adormecida"
+            
+        if score >= 35:
+            prioridade = "ALTÍSSIMA"
+            motivo = "Ponto de Virada + Força"
+        elif score >= 20:
+            prioridade = "ALTA"
+            motivo = "Radar de Repetição (2-4)"
+        elif score >= 10:
+            prioridade = "MÉDIA"
+            motivo = "Em ciclo normal"
+        else:
+            prioridade = "BAIXA"
+            motivo = "Exausta ou Esquecida"
+            
+        if freq_recente[d] >= 6:
+            motivo = "Fadiga (Exausta)"
+            prioridade = "BAIXA"
+        elif atraso >= 15:
+            motivo = "Fora do Ciclo (Esquecida)"
+            prioridade = "BAIXA"
+        elif atraso == 0:
+            motivo = "Repetição Imediata"
+        elif 4 <= atraso <= 7:
+            motivo = "Ponto de Virada Perfeito"
+
+        dados.append({
+            "Dezena": d,
+            "Status Momentum": status,
+            "Freq (Últ 30)": freq_recente[d],
+            "Atraso": atraso,
+            "Prioridade Final": prioridade,
+            "Motivo": motivo,
+            "Score Exato": round(score, 2)
+        })
+        
+    df = pd.DataFrame(dados)
+    df = df.sort_values(by=["Prioridade Final", "Score Exato"], ascending=[False, False]).reset_index(drop=True)
+    return df
+
 # -----------------------------------------------------------------------------
 # BARRA LATERAL — BASE HISTÓRICA
 # -----------------------------------------------------------------------------
@@ -748,11 +814,12 @@ qtd_exportar = st.sidebar.number_input(
 # -----------------------------------------------------------------------------
 # ABAS
 # -----------------------------------------------------------------------------
-tab_gerador, tab_metricas, tab_trincas, tab_conferencia = st.tabs([
+tab_gerador, tab_metricas, tab_trincas, tab_conferencia, tab_diagnostico = st.tabs([
     "🚀 Gerador & Recalibragem",
     f"📊 Métricas ({opcao_matriz})",
     "🔥 Top Trincas Dinâmicas",
-    "📋 Conferência de Acertos"
+    "📋 Conferência de Acertos",
+    "🧠 Diagnóstico Integrado (Momentum)"
 ])
 
 # -----------------------------------------------------------------------------
@@ -1063,3 +1130,36 @@ with tab_conferencia:
         )
     else:
         st.warning("Carregue o histórico de concursos na barra lateral para gerar a auditoria.")
+
+# -----------------------------------------------------------------------------
+# ABA DIAGNÓSTICO INTEGRADO
+# -----------------------------------------------------------------------------
+with tab_diagnostico:
+    st.subheader("🧠 Diagnóstico Integrado (Ciclos + Momentum)")
+    st.info("Abaixo está a análise de todas as 60 dezenas, classificando o status atual e o motivo para priorizar ou não o número, com base no concurso de corte selecionado.")
+    
+    if sorteios_historico:
+        df_diag = gerar_diagnostico_integrado(sorteios_historico, momentum_scores)
+        
+        # Exibição com formatação condicional
+        st.dataframe(
+            df_diag,
+            use_container_width=True,
+            column_config={
+                "Prioridade Final": st.column_config.TextColumn("Prioridade"),
+                "Score Exato": st.column_config.NumberColumn(format="%.2f")
+            }
+        )
+        
+        buffer_diag = io.BytesIO()
+        with pd.ExcelWriter(buffer_diag, engine='openpyxl') as writer:
+            df_diag.to_excel(writer, index=False, sheet_name='Diagnostico_Integrado')
+        st.download_button(
+            label="📥 Baixar Diagnóstico (.xlsx)",
+            data=buffer_diag.getvalue(),
+            file_name="diagnostico_integrado_mega_sena.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_diag"
+        )
+    else:
+        st.warning("Carregue o histórico de concursos na barra lateral para gerar o diagnóstico.")
