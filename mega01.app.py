@@ -1083,7 +1083,6 @@ with tab_gerador:
                 st.dataframe(df_premios, use_container_width=True)
             else:
                 st.info("ℹ️ Nenhum dos jogos gerados obteve 4, 5 ou 6 acertos no histórico consultado.")
-
     
     # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (O "FILTRO DO FILTRO")
     if 'combinacoes_aprovadas' in st.session_state and st.session_state['combinacoes_aprovadas']:
