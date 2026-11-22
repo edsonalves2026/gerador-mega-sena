@@ -1043,6 +1043,80 @@ with tab_gerador:
                 else:
                     st.warning("⚠️ Nenhum prêmio principal (Sena/Quina) foi retido por estas combinações no histórico analisado.")
 
+    # CONFERÊNCIA HISTÓRICA
+    if st.session_state.get('jogos_gerados_atuais'):
+        st.markdown("---")
+        st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
+        st.caption(
+            f"Conferência sobre **todos os {len(sorteios_historico_completos)} concursos** até o corte — "
+            f"não apenas os {len(sorteios_historico)} da janela de análise."
+        )
+
+        if st.button("🔎 Verificar Premiações no Histórico Completo"):
+            premiacoes_encontradas = []
+            for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
+                set_jogo = set(jogo)
+                for idx_conc, sorteio in enumerate(sorteios_historico_completos):
+                    acertos = len(set_jogo & set(sorteio))
+                    if acertos >= 4:
+                        conc_num = (
+                            df_historico.iloc[idx_conc].get('concurso', idx_conc + 1)
+                            if df_historico is not None else idx_conc + 1
+                        )
+                        if acertos == 6:
+                            tipo = "Sena (6 acertos)"
+                        elif acertos == 5:
+                            tipo = "Quina (5 acertos)"
+                        else:
+                            tipo = "Quadra (4 acertos)"
+                        premiacoes_encontradas.append({
+                            "Jogo Gerado Nº": idx_jogo,
+                            "Dezenas do Jogo": ", ".join(f"{d:02d}" for d in sorted(jogo)),
+                            "Tipo de Prêmio": tipo,
+                            "Concurso": conc_num,
+                            "Dezenas Sorteadas": ", ".join(f"{d:02d}" for d in sorted(sorteio)),
+                        })
+            if premiacoes_encontradas:
+                df_premios = pd.DataFrame(premiacoes_encontradas)
+                df_premios.index = df_premios.index + 1
+                st.success(f"🎉 **{len(premiacoes_encontradas)}** premiações históricas encontradas!")
+                st.dataframe(df_premios, use_container_width=True)
+            else:
+                st.info("ℹ️ Nenhum dos jogos gerados obteve 4, 5 ou 6 acertos no histórico consultado.")
+
+    
+    # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (O "FILTRO DO FILTRO")
+    if 'combinacoes_aprovadas' in st.session_state and st.session_state['combinacoes_aprovadas']:
+        st.markdown("---")
+        st.subheader("🔍 Conferência das Combinações (Pool Completo)")
+        st.caption(
+            f"Análise de acertos nas **{len(st.session_state['combinacoes_aprovadas']):,} combinações** "
+            f"que passaram nos filtros estruturais, mas antes da redução/diversificação."
+        )
+        
+        if st.button("🔎 Auditar Combinações Aprovadas no Histórico"):
+            with st.spinner("Cruzando todas as combinações com o histórico..."):
+                premios_pool = {"Sena": 0, "Quina": 0, "Quadra": 0}
+                sets_combinacoes = [set(c) for c in st.session_state['combinacoes_aprovadas']]
+                
+                for sorteio in sorteios_historico_completos:
+                    set_sorteio = set(sorteio)
+                    for c_set in sets_combinacoes:
+                        acertos = len(c_set & set_sorteio)
+                        if acertos == 6: premios_pool["Sena"] += 1
+                        elif acertos == 5: premios_pool["Quina"] += 1
+                        elif acertos == 4: premios_pool["Quadra"] += 1
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Senas no Pool", premios_pool["Sena"])
+                col2.metric("Quinas no Pool", premios_pool["Quina"])
+                col3.metric("Quadras no Pool", premios_pool["Quadra"])
+                
+                if premios_pool["Sena"] > 0 or premios_pool["Quina"] > 0:
+                    st.success("✅ O seu filtro estrutural reteve o prêmio principal em algum momento do histórico!")
+                else:
+                    st.warning("⚠️ Nenhum prêmio principal (Sena/Quina) foi retido por estas combinações no histórico analisado.")
+
         # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (AUDITORIA CIRÚRGICA)
     if 'combinacoes_aprovadas' in st.session_state and st.session_state['combinacoes_aprovadas']:
         st.markdown("---")
