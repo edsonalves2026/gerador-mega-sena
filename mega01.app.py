@@ -1043,46 +1043,85 @@ with tab_gerador:
                 else:
                     st.warning("⚠️ Nenhum prêmio principal (Sena/Quina) foi retido por estas combinações no histórico analisado.")
 
-    # CONFERÊNCIA HISTÓRICA
-    if st.session_state.get('jogos_gerados_atuais'):
+        # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (AUDITORIA CIRÚRGICA)
+    if 'combinacoes_aprovadas' in st.session_state and st.session_state['combinacoes_aprovadas']:
         st.markdown("---")
-        st.subheader("🔍 Conferência Histórica dos Jogos Gerados")
+        st.subheader("🔍 Conferência das Combinações (Auditoria do Próximo Sorteio)")
         st.caption(
-            f"Conferência sobre **todos os {len(sorteios_historico_completos)} concursos** até o corte — "
-            f"não apenas os {len(sorteios_historico)} da janela de análise."
+            f"Análise de acertos nas **{len(st.session_state['combinacoes_aprovadas']):,} combinações** "
+            f"que passaram nos filtros estruturais para o próximo concurso."
         )
-
-        if st.button("🔎 Verificar Premiações no Histórico Completo"):
-            premiacoes_encontradas = []
-            for idx_jogo, jogo in enumerate(st.session_state['jogos_gerados_atuais'], start=1):
-                set_jogo = set(jogo)
-                for idx_conc, sorteio in enumerate(sorteios_historico_completos):
-                    acertos = len(set_jogo & set(sorteio))
-                    if acertos >= 4:
-                        conc_num = (
-                            df_historico.iloc[idx_conc].get('concurso', idx_conc + 1)
-                            if df_historico is not None else idx_conc + 1
-                        )
-                        if acertos == 6:
-                            tipo = "Sena (6 acertos)"
-                        elif acertos == 5:
-                            tipo = "Quina (5 acertos)"
+        
+        # Input manual do resultado real (Opcional)
+        dezenas_reais_str = st.text_input(
+            "Se quiser testar o resultado do PRÓXIMO concurso, digite as 6 dezenas sorteadas (ex: 10 21 24 28 34 44):",
+            key="input_pool_audit"
+        )
+        
+        if st.button("🔎 Auditar Pool Completo", type="primary"):
+            
+            # Se o usuário digitou dezenas, faz a busca cirúrgica no próximo concurso
+            if dezenas_reais_str:
+                try:
+                    dezenas_limpas = re.findall(r'\d+', dezenas_reais_str)
+                    sorteio_real = set(int(d) for d in dezenas_limpas)
+                    
+                    if len(sorteio_real) != 6:
+                        st.error("Digite exatamente 6 dezenas.")
+                    else:
+                        premiados_proximo = []
+                        for comb in st.session_state['combinacoes_aprovadas']:
+                            acertos = len(set(comb) & sorteio_real)
+                            if acertos >= 4:
+                                premiados_proximo.append({
+                                    "Acertos": acertos,
+                                    "Jogo": ", ".join(f"{d:02d}" for d in sorted(comb))
+                                })
+                        
+                        if premiados_proximo:
+                            st.success(f"🎯 **{len(premiados_proximo)} combinações** do seu Pool teriam premiado no sorteio informado!")
+                            # Ordena para mostrar a Sena primeiro
+                            df_prev = pd.DataFrame(premiados_proximo).sort_values(by="Acertos", ascending=False)
+                            st.dataframe(df_prev, use_container_width=True, hide_index=True)
                         else:
-                            tipo = "Quadra (4 acertos)"
-                        premiacoes_encontradas.append({
-                            "Jogo Gerado Nº": idx_jogo,
-                            "Dezenas do Jogo": ", ".join(f"{d:02d}" for d in sorted(jogo)),
-                            "Tipo de Prêmio": tipo,
-                            "Concurso": conc_num,
-                            "Dezenas Sorteadas": ", ".join(f"{d:02d}" for d in sorted(sorteio)),
-                        })
-            if premiacoes_encontradas:
-                df_premios = pd.DataFrame(premiacoes_encontradas)
-                df_premios.index = df_premios.index + 1
-                st.success(f"🎉 **{len(premiacoes_encontradas)}** premiações históricas encontradas!")
-                st.dataframe(df_premios, use_container_width=True)
+                            st.warning("⚠️ Nenhuma combinação do Pool faria Quadra, Quina ou Sena neste resultado.")
+                            
+                except ValueError:
+                    st.error("Erro ao processar as dezenas.")
+
             else:
-                st.info("ℹ️ Nenhum dos jogos gerados obteve 4, 5 ou 6 acertos no histórico consultado.")
+                # Comportamento antigo (Busca no histórico inteiro)
+                st.info("Nenhuma dezena informada. Buscando no histórico completo até o corte...")
+                with st.spinner("Cruzando todas as combinações com o histórico..."):
+                    premios_pool = {"Sena": 0, "Quina": 0, "Quadra": 0}
+                    jogos_premiados_detalhes = []
+                    sets_combinacoes = [set(c) for c in st.session_state['combinacoes_aprovadas']]
+                    
+                    for idx_conc, sorteio in enumerate(sorteios_historico_completos):
+                        set_sorteio = set(sorteio)
+                        for comb in st.session_state['combinacoes_aprovadas']:
+                            acertos = len(set(comb) & set_sorteio)
+                            if acertos >= 4:
+                                if acertos == 6: premios_pool["Sena"] += 1
+                                elif acertos == 5: premios_pool["Quina"] += 1
+                                elif acertos == 4: premios_pool["Quadra"] += 1
+                                
+                                if len(jogos_premiados_detalhes) < 100: 
+                                    conc_num = df_historico.iloc[idx_conc].get('concurso', idx_conc + 1) if df_historico is not None else idx_conc + 1
+                                    jogos_premiados_detalhes.append({
+                                        "Tipo": "Sena" if acertos == 6 else ("Quina" if acertos == 5 else "Quadra"),
+                                        "Concurso": conc_num,
+                                        "Jogo": ", ".join(f"{d:02d}" for d in sorted(comb))
+                                    })
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Senas no Pool", premios_pool["Sena"])
+                    col2.metric("Quinas no Pool", premios_pool["Quina"])
+                    col3.metric("Quadras no Pool", premios_pool["Quadra"])
+                    
+                    if jogos_premiados_detalhes:
+                        st.markdown("#### 🏆 Detalhamento dos Jogos Premiados (Histórico)")
+                        st.dataframe(pd.DataFrame(jogos_premiados_detalhes), use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
 # ABA MÉTRICAS
