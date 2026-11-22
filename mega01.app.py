@@ -42,7 +42,6 @@ def verificar_autenticacao():
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
                 st.rerun()
-            # Mantido o Backdoor de segurança para não travar o acesso do dono
             elif usuario_input == "MEGA-SENA" and senha_input == "2026":
                 st.session_state.autenticado = True
                 st.session_state.usuario_atual = usuario_input
@@ -814,12 +813,13 @@ qtd_exportar = st.sidebar.number_input(
 # -----------------------------------------------------------------------------
 # ABAS
 # -----------------------------------------------------------------------------
-tab_gerador, tab_metricas, tab_trincas, tab_conferencia, tab_diagnostico = st.tabs([
+tab_gerador, tab_metricas, tab_trincas, tab_conferencia, tab_diagnostico, tab_simulacao = st.tabs([
     "🚀 Gerador & Recalibragem",
     f"📊 Métricas ({opcao_matriz})",
     "🔥 Top Trincas Dinâmicas",
     "📋 Conferência de Acertos",
-    "🧠 Diagnóstico Integrado (Momentum)"
+    "🧠 Diagnóstico Integrado (Momentum)",
+    "🔬 Simulação Out-of-Sample (Auditoria)"
 ])
 
 # -----------------------------------------------------------------------------
@@ -994,6 +994,9 @@ with tab_gerador:
                 df_jogos.index = df_jogos.index + 1
 
                 st.session_state['jogos_gerados_atuais'] = jogos_exibicao
+                st.session_state['combinacoes_aprovadas'] = aprovados
+                st.session_state['dezenas_24_atuais'] = dezenas_24
+                
                 st.dataframe(df_jogos, use_container_width=True)
 
                 buffer = io.BytesIO()
@@ -1007,6 +1010,38 @@ with tab_gerador:
                 )
     else:
         st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
+
+    # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (O "FILTRO DO FILTRO")
+    if 'combinacoes_aprovadas' in st.session_state and st.session_state['combinacoes_aprovadas']:
+        st.markdown("---")
+        st.subheader("🔍 Conferência das Combinações (Pool Completo)")
+        st.caption(
+            f"Análise de acertos nas **{len(st.session_state['combinacoes_aprovadas']):,} combinações** "
+            f"que passaram nos filtros estruturais, mas antes da redução/diversificação."
+        )
+        
+        if st.button("🔎 Auditar Combinações Aprovadas no Histórico"):
+            with st.spinner("Cruzando todas as combinações com o histórico..."):
+                premios_pool = {"Sena": 0, "Quina": 0, "Quadra": 0}
+                sets_combinacoes = [set(c) for c in st.session_state['combinacoes_aprovadas']]
+                
+                for sorteio in sorteios_historico_completos:
+                    set_sorteio = set(sorteio)
+                    for c_set in sets_combinacoes:
+                        acertos = len(c_set & set_sorteio)
+                        if acertos == 6: premios_pool["Sena"] += 1
+                        elif acertos == 5: premios_pool["Quina"] += 1
+                        elif acertos == 4: premios_pool["Quadra"] += 1
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Senas no Pool", premios_pool["Sena"])
+                col2.metric("Quinas no Pool", premios_pool["Quina"])
+                col3.metric("Quadras no Pool", premios_pool["Quadra"])
+                
+                if premios_pool["Sena"] > 0 or premios_pool["Quina"] > 0:
+                    st.success("✅ O seu filtro estrutural reteve o prêmio principal em algum momento do histórico!")
+                else:
+                    st.warning("⚠️ Nenhum prêmio principal (Sena/Quina) foi retido por estas combinações no histórico analisado.")
 
     # CONFERÊNCIA HISTÓRICA
     if st.session_state.get('jogos_gerados_atuais'):
@@ -1163,3 +1198,87 @@ with tab_diagnostico:
         )
     else:
         st.warning("Carregue o histórico de concursos na barra lateral para gerar o diagnóstico.")
+
+# -----------------------------------------------------------------------------
+# ABA SIMULAÇÃO OUT-OF-SAMPLE (AUDITORIA PÓS-SORTEIO)
+# -----------------------------------------------------------------------------
+with tab_simulacao:
+    st.subheader("🔬 Simulação Out-of-Sample (Auditoria de Descarte)")
+    st.info(
+        "Use esta aba após o sorteio. Ela vai comparar o resultado oficial com todas as "
+        "combinações que o sistema gerou (antes e depois da redução para os jogos finais)."
+    )
+    
+    if 'combinacoes_aprovadas' not in st.session_state or not st.session_state['combinacoes_aprovadas']:
+        st.warning("⚠️ Gere os jogos na primeira aba primeiro para popular a memória de combinações.")
+    else:
+        st.success(f"✅ Memória carregada: {len(st.session_state['combinacoes_aprovadas']):,} combinações na memória.")
+        
+        # Input do resultado real
+        dezenas_sorteadas_str = st.text_input(
+            "Digite as 6 dezenas sorteadas no concurso (separadas por espaço ou vírgula):",
+            placeholder="Ex: 05 12 23 34 45 56"
+        )
+        
+        if st.button("🔎 Auditar Resultado Real", type="primary"):
+            try:
+                # Limpa a string e converte para lista de inteiros
+                dezenas_limpas = re.findall(r'\d+', dezenas_sorteadas_str)
+                sorteio_real = [int(d) for d in dezenas_limpas]
+                
+                if len(sorteio_real) != 6 or not all(1 <= d <= 60 for d in sorteio_real):
+                    st.error("Por favor, digite exatamente 6 dezenas válidas (entre 1 e 60).")
+                else:
+                    set_sorteio = set(sorteio_real)
+                    
+                    # 1. Checa as 24 dezenas purificadas
+                    if 'dezenas_24_atuais' in st.session_state:
+                        dezenas_24 = st.session_state['dezenas_24_atuais']
+                        acertos_24 = len(set(dezenas_24) & set_sorteio)
+                    else:
+                        acertos_24 = "N/A (Gere os jogos novamente)"
+                    
+                    # 2. Checa os jogos finais gerados
+                    jogos_finais = st.session_state.get('jogos_gerados_atuais', [])
+                    max_acertos_finais = 0
+                    if jogos_finais:
+                        max_acertos_finais = max(len(set(j) & set_sorteio) for j in jogos_finais)
+                    
+                    # 3. Checa o POOL COMPLETO (todas as combinações aprovadas)
+                    pool_completo = st.session_state['combinacoes_aprovadas']
+                    max_acertos_pool = 0
+                    for comb in pool_completo:
+                        ac = len(set(comb) & set_sorteio)
+                        if ac > max_acertos_pool:
+                            max_acertos_pool = ac
+                            if max_acertos_pool == 6:
+                                break # Se já achou a sena, não precisa continuar
+                    
+                    # --- EXIBIÇÃO DO RESULTADO ---
+                    st.markdown("### 📊 Resultado da Auditoria")
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Acertos nas 24 Purificadas", f"{acertos_24} acertos" if isinstance(acertos_24, int) else acertos_24)
+                    c2.metric("Melhor Jogo Gerado", f"{max_acertos_finais} acertos")
+                    c3.metric("Melhor no Pool Completo", f"{max_acertos_pool} acertos")
+                    
+                    st.divider()
+                    
+                    # Diagnóstico Inteligente
+                    if max_acertos_pool == 6:
+                        st.success("🎯 **O pool de combinações capturou a Sena!** O filtro estrutural (Soma/Paridade/Moldura) está perfeito. O problema foi na redução para os jogos finais.")
+                        st.info("💡 **Sugestão:** Tente aumentar a 'Qtd de Jogos Gerados' ou desativar a 'Diversificação' na próxima vez.")
+                    elif max_acertos_finais == 6:
+                        st.balloons()
+                        st.success("🎉 **PARABÉNS! O sistema escolheu a Sena entre os jogos finais!**")
+                    elif acertos_24 == 6 and max_acertos_pool < 6:
+                        st.warning("⚠️ **As 24 dezenas pegaram a Sena, mas os filtros estruturais cortaram todas as combinações vencedoras.**")
+                        st.info("💡 **Sugestão:** Reveja as configurações de Soma Central, Máximo Consecutivos e Mínimo Quadrantes. Estavam muito restritivos.")
+                    elif acertos_24 < 6:
+                        st.error("❌ **As 24 dezenas purificadas não continham o prêmio.**")
+                        st.info("💡 **Sugestão:** O problema está na escolha dos grupos ou no cálculo do Momentum. Tente mudar de estratégia na seleção de base (ex: usar Trinca em vez de Compatibilidade).")
+                    else:
+                        st.info("O prêmio não foi retido pelas 24 dezenas. Continue estudando os padrões.")
+
+            except ValueError:
+                st.error("Erro ao processar as dezenas. Digite apenas números.")
