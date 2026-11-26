@@ -668,6 +668,11 @@ def gerar_diagnostico_integrado(sorteios, momentum_scores):
     df = df.sort_values(by=["Prioridade Final", "Score Exato"], ascending=[False, False]).reset_index(drop=True)
     return df
 
+@st.cache_data(show_spinner=False)
+def preparar_historico_numpy(sorteios_tupla):
+    """Converte os sorteios em matriz NumPy otimizada e cacheada."""
+    return np.array(sorteios_tupla, dtype=np.int16)
+
 # -----------------------------------------------------------------------------
 # BARRA LATERAL — BASE HISTÓRICA
 # -----------------------------------------------------------------------------
@@ -1011,83 +1016,128 @@ with tab_gerador:
     else:
         st.error("Selecione pelo menos 24 dezenas no Pool inicial para continuar.")
 
-    # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (O "FILTRO DO FILTRO")
+    # CONFERÊNCIA DAS COMBINAÇÕES APROVADAS (O "FILTRO DO FILTRO" - OTIMIZADO NUMPY)
     if 'combinacoes_aprovadas' in st.session_state and st.session_state['combinacoes_aprovadas']:
         st.markdown("---")
-        st.subheader("🔍 Conferência das Combinações (Auditoria do Próximo Sorteio)")
+        st.subheader("🔍 Conferência das Combinações (Pool Completo — Otimizado NumPy)")
         st.caption(
-            f"Análise de acertos nas **{len(st.session_state['combinacoes_aprovadas']):,} combinações** "
-            f"que passaram nos filtros estruturais para o próximo concurso."
+            f"Análise de acertos vetorizada nas **{len(st.session_state['combinacoes_aprovadas']):,} combinações** "
+            f"do pool estrutural."
         )
-        
-        # Input manual do resultado real (Opcional)
-        dezenas_reais_str = st.text_input(
-            "Se quiser testar o resultado do PRÓXIMO concurso, digite as 6 dezenas sorteadas (ex: 10 21 24 28 34 44):",
-            key="input_pool_audit"
-        )
-        
-        if st.button("🔎 Auditar Pool Completo", type="primary"):
-            
-            # Se o usuário digitou dezenas, faz a busca cirúrgica no próximo concurso
-            if dezenas_reais_str:
-                try:
-                    dezenas_limpas = re.findall(r'\d+', dezenas_reais_str)
-                    sorteio_real = set(int(d) for d in dezenas_limpas)
-                    
-                    if len(sorteio_real) != 6:
-                        st.error("Digite exatamente 6 dezenas.")
-                    else:
-                        premiados_proximo = []
-                        for comb in st.session_state['combinacoes_aprovadas']:
-                            acertos = len(set(comb) & sorteio_real)
-                            if acertos >= 4:
-                                premiados_proximo.append({
-                                    "Acertos": acertos,
-                                    "Jogo": ", ".join(f"{d:02d}" for d in sorted(comb))
-                                })
-                        
-                        if premiados_proximo:
-                            st.success(f"🎯 **{len(premiados_proximo)} combinações** do seu Pool teriam premiado no sorteio informado!")
-                            df_prev = pd.DataFrame(premiados_proximo).sort_values(by="Acertos", ascending=False)
-                            st.dataframe(df_prev, use_container_width=True, hide_index=True)
-                        else:
-                            st.warning("⚠️ Nenhuma combinação do Pool faria Quadra, Quina ou Sena neste resultado.")
-                            
-                except ValueError:
-                    st.error("Erro ao processar as dezenas.")
 
+        dezenas_reais_str = st.text_input(
+            "Opcional — Digite 6 dezenas para testar um concurso específico (ex: 10 21 24 28 34 44), ou deixe em branco:",
+            key="input_pool_audit_np"
+        )
+
+        if st.button("🔎 Auditar Pool com NumPy", type="primary", key="btn_auditar_pool_np"):
+            
+            # Converte o pool de combinações para uma matriz NumPy
+            arr_pool = np.array(st.session_state['combinacoes_aprovadas'], dtype=np.int16)
+            
+            # Modo 1: Auditoria cirúrgica de um único resultado informado
+            if dezenas_reais_str.strip():
+                dezenas_limpas = [int(d) for d in re.findall(r'\d+', dezenas_reais_str)]
+                sorteio_real = set(dezenas_limpas)
+
+                if len(dezenas_limpas) != 6 or len(sorteio_real) != 6:
+                    st.error("Digite exatamente 6 dezenas distintas.")
+                elif any(d < 1 or d > 60 for d in sorteio_real):
+                    st.error("As dezenas devem estar entre 01 e 60.")
+                else:
+                    with st.spinner("Processando auditoria cirúrgica com NumPy..."):
+                        arr_sorteio = np.array(list(sorteio_real), dtype=np.int16)
+                        
+                        # Interseção vetorizada
+                        acertos_por_jogo = np.isin(arr_pool, arr_sorteio).sum(axis=1)
+                        
+                        # Filtra jogos com 4+ acertos
+                        mask_premiados = acertos_por_jogo >= 4
+                        indices_premiados = np.where(mask_premiados)[0]
+
+                        premiados_proximo = []
+                        for idx in indices_premiados:
+                            acertos = int(acertos_por_jogo[idx])
+                            comb = arr_pool[idx]
+                            premiados_proximo.append({
+                                "Acertos": acertos,
+                                "Prêmio": "Sena" if acertos == 6 else ("Quina" if acertos == 5 else "Quadra"),
+                                "Jogo": ", ".join(f"{d:02d}" for d in sorted(comb))
+                            })
+
+                    if premiados_proximo:
+                        st.success(f"🎯 **{len(premiados_proximo)} combinações** do seu Pool premiaram no resultado informado!")
+                        df_prev = pd.DataFrame(premiados_proximo).sort_values(by="Acertos", ascending=False)
+                        st.dataframe(df_prev, use_container_width=True, hide_index=True)
+                    else:
+                        st.warning("⚠️ Nenhuma combinação do Pool faria Quadra, Quina ou Sena neste resultado.")
+
+            # Modo 2: Auditoria no histórico completo (Usando Cache)
             else:
-                # Comportamento antigo (Busca no histórico inteiro)
-                st.info("Nenhuma dezena informada. Buscando no histórico completo até o corte...")
-                with st.spinner("Cruzando todas as combinações com o histórico..."):
+                with st.spinner("Cruzando o pool inteiro com o histórico via NumPy..."):
+                    
+                    # Prepara o histórico com cache
+                    sorteios_tupla = tuple(tuple(s) for s in sorteios_historico_completos)
+                    arr_historico = preparar_historico_numpy(sorteios_tupla) 
+                    
                     premios_pool = {"Sena": 0, "Quina": 0, "Quadra": 0}
                     jogos_premiados_detalhes = []
-                    sets_combinacoes = [set(c) for c in st.session_state['combinacoes_aprovadas']]
+
+                    chunk_size = 10000
+                    total_combinacoes = len(arr_pool)
+                    total_chunks = (total_combinacoes + chunk_size - 1) // chunk_size
+
+                    progress_bar = st.progress(0, text="Iniciando auditoria dos blocos...")
                     
-                    for idx_conc, sorteio in enumerate(sorteios_historico_completos):
-                        set_sorteio = set(sorteio)
-                        for comb in st.session_state['combinacoes_aprovadas']:
-                            acertos = len(set(comb) & set_sorteio)
-                            if acertos >= 4:
-                                if acertos == 6: premios_pool["Sena"] += 1
-                                elif acertos == 5: premios_pool["Quina"] += 1
-                                elif acertos == 4: premios_pool["Quadra"] += 1
-                                
-                                if len(jogos_premiados_detalhes) < 100: 
-                                    conc_num = df_historico.iloc[idx_conc].get('concurso', idx_conc + 1) if df_historico is not None else idx_conc + 1
-                                    jogos_premiados_detalhes.append({
-                                        "Tipo": "Sena" if acertos == 6 else ("Quina" if acertos == 5 else "Quadra"),
-                                        "Concurso": conc_num,
-                                        "Jogo": ", ".join(f"{d:02d}" for d in sorted(comb))
-                                    })
-                    
+                    for i_chunk, i in enumerate(range(0, total_combinacoes, chunk_size)):
+                        chunk = arr_pool[i:i + chunk_size]
+                        
+                        progresso_atual = min(1.0, (i_chunk + 1) / total_chunks)
+                        progress_bar.progress(
+                            progresso_atual, 
+                            text=f"Processando bloco {i_chunk + 1} de {total_chunks} ({min(i + chunk_size, total_combinacoes):,} de {total_combinacoes:,} combinações)..."
+                        )
+                        
+                        # Comparação matricial
+                        matches = np.isin(chunk[:, None, :], arr_historico[None, :, :])
+                        acertos_matrix = matches.sum(axis=2)
+
+                        premios_pool["Sena"] += int((acertos_matrix == 6).sum())
+                        premios_pool["Quina"] += int((acertos_matrix == 5).sum())
+                        premios_pool["Quadra"] += int((acertos_matrix == 4).sum())
+
+                        # Coleta detalhes (limite de 100 para exibição)
+                        if len(jogos_premiados_detalhes) < 100:
+                            locs = np.where(acertos_matrix >= 4)
+                            for row, col in zip(locs[0], locs[1]):
+                                if len(jogos_premiados_detalhes) >= 100:
+                                    break
+                                acertos_val = acertos_matrix[row, col]
+                                comb_original = chunk[row]
+                                conc_num = (
+                                    df_historico.iloc[col].get('concurso', col + 1)
+                                    if df_historico is not None else col + 1
+                                )
+                                jogos_premiados_detalhes.append({
+                                    "Tipo": "Sena" if acertos_val == 6 else ("Quina" if acertos_val == 5 else "Quadra"),
+                                    "Concurso": conc_num,
+                                    "Jogo": ", ".join(f"{d:02d}" for d in sorted(comb_original))
+                                })
+
+                    progress_bar.empty()
+
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Senas no Pool", premios_pool["Sena"])
                     col2.metric("Quinas no Pool", premios_pool["Quina"])
                     col3.metric("Quadras no Pool", premios_pool["Quadra"])
-                    
+
+                    if premios_pool["Sena"] > 0 or premios_pool["Quina"] > 0:
+                        st.success("✅ O seu filtro estrutural reteve o prêmio principal em algum momento do histórico!")
+                    else:
+                        st.warning("⚠️ Nenhum prêmio principal (Sena/Quina) foi retido por estas combinações no histórico analisado.")
+
                     if jogos_premiados_detalhes:
-                        st.markdown("#### 🏆 Detalhamento dos Jogos Premiados (Histórico)")
+                        st.markdown("#### 🏆 Detalhamento dos Jogos Premiados (até 100 primeiros registros)")
                         st.dataframe(pd.DataFrame(jogos_premiados_detalhes), use_container_width=True, hide_index=True)
 
     # CONFERÊNCIA HISTÓRICA
